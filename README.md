@@ -351,19 +351,63 @@ The honest recommendation is a **ribbon or a pedal for `alpha`**, not a knob.
 The gesture is a sweep with musical shape and needs a continuous, bimanual,
 absolute-position control. A knob is for setting a value; `alpha` is played.
 
-## What is not solved
+## The conical end, and what was actually wrong with it
 
-- **Notation.** There is no way to write a bore glissando. A second stave line
-  showing `alpha` against time, as a continuous contour, is the obvious start.
-- **The conical end is unruly.** At `alpha = 1` the regimes crowd together and
-  the reed's choice between them becomes hypersensitive — the embouchure stops
-  selecting cleanly. Real woodwinds solve this with register vents and short
-  bores, neither of which this instrument has. Playable range is currently
-  roughly `alpha ≤ 0.8` for reliable register control.
-- **`beta` is not pitch-neutral.** Because the valve's frequency is tied to the
-  embouchure at both ends, morphing the reed drags the pitch. A player
-  compensates, but it should probably be compensated in the instrument the way
-  `alpha` now is.
+The conical end was reported here as unruly: at `alpha = 1` the embouchure
+stopped selecting regimes cleanly. Chasing it turned up something more useful
+than a fix.
+
+**It was not the cone.** It was the pitch compensation. An instrument tuned to
+hold its *pedal* note has to be 4.55 m long, and that length packs its regimes
+in — 35.6 Hz apart, against 54.6 Hz for the 2.96 m instrument that holds the
+third regime instead. With barely two thirds of the spacing, the excitation has
+far less to discriminate between, and the choice becomes hypersensitive.
+Compensating for the regime actually played — which the audio script already
+did — restores clean control:
+
+| compensation | length at `alpha = 1` | regime spacing | embouchure control |
+|---|---|---|---|
+| regime 1 (the pedal) | 4.55 m | 35.6 Hz | **erratic** |
+| regime 3 (a playing register) | 2.96 m | 54.6 Hz | **monotone** |
+
+So the fix for the conical end was a tuning decision made two sections up, and
+the earlier diagnosis mistook a consequence for a cause.
+
+## The register vent
+
+A vent was built anyway, because it is a real mechanism this instrument was
+missing, and it works — it is just not the answer to the question above.
+
+A side hole shunts the bore through the inertance of the air in it,
+`Z = jωρt/S`. That impedance *rises* with frequency, which is the whole trick:
+low regimes see something close to a short circuit to the outside and are
+spoiled, high ones see an impedance large enough to ignore. One small hole
+therefore removes an instrument's lower register and leaves the upper one
+standing. Opening it raises the sounding floor by between 1.3× and 1.7×, and
+in the acoustic model it removes regimes 1 and 2 outright while moving regime 3
+by 10–18 cents.
+
+The interesting part is **where to put it**. A register hole works by sitting
+at a pressure *node* of the regime it preserves — on a real instrument that
+spot is found once and drilled. Here the bore changes shape while the
+instrument plays, so the node moves, and the vent has to travel with it:
+
+| alpha | 0.00 | 0.25 | 0.50 | 0.75 | 1.00 |
+|---|---|---|---|---|---|
+| vent position, fraction along the bore | 0.16 | 0.18 | 0.20 | 0.22 | 0.26 |
+
+A hole drilled for the cylindrical end is in the wrong place at the conical
+one. `fit_register_vent` searches for the node at each morph position and
+stores the schedule.
+
+Two things had to be learned by getting them wrong, and both are now in the
+code as the reasons for constraints that would otherwise look arbitrary. The
+search first reported *infinite* promotion at a useless position, because a
+vent that destroys the target regime as well leaves nothing underneath it to
+compare against — holding the target's pitch is a constraint, not a quantity to
+trade away. And a regime has several nodes, all of which promote it, so the
+search jumped between them from one morph position to the next; taking the
+earliest node that does essentially as well keeps the schedule smooth.
 
 # Where this goes next
 
@@ -382,6 +426,20 @@ while it plays. The reference handles that by resampling its delay lines
 (`Waveguide.adopt`); Faust cannot resize a `par`. The fix is a fixed
 `NSECTIONS` with an interpolated delay absorbing the difference, so the morph
 only ever changes coefficients.
+
+## The Faust toolchain
+
+Faust is in Ubuntu's **universe** repository and installs with
+`apt-get install faust` — but only after `apt-get update`, because the base
+image ships no package lists and the install otherwise fails with a bare
+"unable to locate package", which reads exactly like the package not existing.
+That is why the port was written blind the first time round.
+
+`.claude/hooks/session-start.sh` now installs it, along with the Python
+dependencies, on every Claude Code on the web session; `.claude/settings.json`
+registers the hook. Once it is on the default branch every future session gets
+a container with `faust` on the path and `PYTHONPATH` pointing at `src/`.
+Locally the hook exits immediately, assuming a machine that is already set up.
 
 Remaining work, in order:
 

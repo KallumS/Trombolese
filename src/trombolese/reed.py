@@ -8,12 +8,22 @@ pressure difference pushes the blades together, so it blows *closed*. Nearly
 everything that distinguishes how the two families speak, slur and crack
 follows from that single sign.
 
-So the excitation morph is, at its heart, that sign made continuous. ``beta``
-runs from 0 (lips) to 1 (double reed), and the coupling coefficient runs from
-+1 to -1 with it, passing through zero -- a valve that barely responds to
-pressure at all and lets the bore ring almost undriven. Alongside the sign, the
-valve's resonance, damping, aperture and stiffness interpolate between
-plausible values for the two instruments.
+So the excitation morph is, at its heart, that sign made continuous. The
+obvious way to do it -- run one valve's coupling coefficient from +1 to -1 --
+turns out to be a trap, and the model said so plainly: at the midpoint the
+coefficient is zero, the valve stops responding to pressure altogether, and
+the embouchure loses all authority over the instrument. Measured, the pitch
+sat 324 cents off target at ``beta = 0.5`` and could not be lipped back by any
+embouchure whatsoever, while every other position on the morph came within
+about 50 cents.
+
+So the morph is instead a **crossfade between two valves**, one blowing open
+and one blowing closed, each keeping its coupling at full strength. Their
+openings are blended into a single effective aperture, so the middle of the
+morph is a valve that is half-lip and half-reed and answers vigorously to
+pressure in both characters at once, rather than a valve that answers to
+nothing. Alongside the blend, each valve's resonance, damping, aperture and
+stiffness interpolate between plausible values for the two instruments.
 
 ``beta`` is deliberately independent of the bore morph ``alpha``. A real
 instrument has to pair a lip reed with a brass bore; this one can put a double
@@ -71,15 +81,16 @@ class ReedParameters:
         *control*, not a constant -- a brass player chooses which regime speaks
         by setting it -- so it is normally overridden per note.
     reed_frequency_ratio:
-        How far above the embouchure control the valve sits at the double-reed
-        end. A double reed resonates well above the regimes it drives, but it
-        must still answer to the player: biting raises a reed's effective
-        stiffness and favours the upper register, just as tightening the lips
-        does on brass. Keeping the valve frequency proportional to the
-        embouchure control at *both* ends is what preserves register control
-        across the whole morph -- pinning it to an absolute frequency at the
-        reed end leaves the player with no pitch control whatsoever, which the
-        model duly demonstrated.
+        How far above the embouchure control the double reed sits. A double
+        reed resonates well above the regimes it drives, but it must still
+        answer to the player: biting raises a reed's effective stiffness and
+        favours the upper register, just as tightening the lips does on brass.
+        Keeping the valve frequency proportional to the embouchure at *both*
+        ends is what preserves register control across the whole morph --
+        pinning the reed end to an absolute frequency leaves the player with no
+        pitch control whatsoever, which the model duly demonstrated.
+    reed_frequency_ratio:
+        See :meth:`Reed.set_morph`.
     lip_q, reed_q:
         Quality factor of the valve. These are higher than a physical lip's,
         and deliberately so: below about 7 the valve is so damped that the
@@ -111,10 +122,67 @@ class ReedParameters:
     reed_closing_pressure: float = 7000.0
 
 
+class _Valve:
+    """One pressure-controlled valve: a damped oscillator with a hard stop."""
+
+    __slots__ = ("striking", "frequency", "q", "width", "rest_opening",
+                 "inverse_mass", "opening", "velocity")
+
+    def __init__(self, striking: float) -> None:
+        self.striking = striking
+        self.frequency = 100.0
+        self.q = 10.0
+        self.width = 0.010
+        self.rest_opening = 3.0e-4
+        self.inverse_mass = 0.0
+        self.opening = self.rest_opening
+        self.velocity = 0.0
+
+    def tune(self, frequency: float, q: float, width: float,
+             rest_opening: float, closing_pressure: float) -> None:
+        self.frequency = frequency
+        self.q = q
+        self.width = width
+        self.rest_opening = rest_opening
+        omega = 2.0 * np.pi * frequency
+        # mu follows from "the pressure that just closes the valve":
+        # closing = mu * omega^2 * rest_opening.
+        self.inverse_mass = (omega**2 * rest_opening) / closing_pressure
+
+    def reset(self) -> None:
+        self.opening = self.rest_opening
+        self.velocity = 0.0
+
+    @property
+    def area(self) -> float:
+        return self.width * max(self.opening, 0.0)
+
+    def advance(self, pressure_difference: float, dt: float) -> None:
+        omega = 2.0 * np.pi * self.frequency
+        acceleration = (
+            self.striking * pressure_difference * self.inverse_mass
+            - (omega / self.q) * self.velocity
+            - omega**2 * (self.opening - self.rest_opening)
+        )
+        self.velocity += acceleration * dt
+        self.opening += self.velocity * dt
+
+        if self.opening < 0.0:
+            self.opening = 0.0
+            if self.velocity < 0.0:
+                self.velocity = 0.0
+        elif self.opening > 3.0 * self.rest_opening:
+            self.opening = 3.0 * self.rest_opening
+            if self.velocity > 0.0:
+                self.velocity = 0.0
+
+
 class Reed:
     """A morphable pressure-controlled valve driving a waveguide.
 
-    Call :meth:`set_morph` at control rate and :meth:`step` once per sample.
+    Holds two valves -- one blowing open, one blowing closed -- and crossfades
+    between them. Call :meth:`set_morph` at control rate and :meth:`step` once
+    per sample.
     """
 
     def __init__(
@@ -127,43 +195,47 @@ class Reed:
         self.parameters = parameters or ReedParameters()
         self.air = air
 
-        self.opening = 0.0
-        self.velocity = 0.0
-        self._frequency = self.parameters.lip_frequency
+        self.lip = _Valve(striking=1.0)     # blows open, as brass lips do
+        self.double = _Valve(striking=-1.0)  # blows closed, as a double reed does
+        self.beta = 0.0
         self.set_morph(0.0)
         self.reset()
 
     def reset(self) -> None:
-        self.opening = self._rest_opening
-        self.velocity = 0.0
+        self.lip.reset()
+        self.double.reset()
+
+    @property
+    def opening(self) -> float:
+        """Effective opening: the blend the bore actually sees."""
+        return (1.0 - self.beta) * self.lip.opening + self.beta * self.double.opening
+
+    @property
+    def effective_area(self) -> float:
+        """Blended aperture of the two valves."""
+        return (1.0 - self.beta) * self.lip.area + self.beta * self.double.area
 
     def set_morph(self, beta: float, frequency: float | None = None) -> None:
-        """Interpolate the valve between lips (``beta = 0``) and reed (``1``).
+        """Crossfade the valve from lips (``beta = 0``) to double reed (``1``).
 
-        ``frequency`` overrides the valve's natural frequency, which is how a
-        player selects a regime at the brass end of the morph. It is scaled
-        toward the double reed's own stiff resonance as ``beta`` rises, since a
-        cane reed's pitch is its own business and not the player's.
+        ``frequency`` overrides the embouchure, which is how a player selects a
+        regime. It stays live at both ends: the double reed's own resonance is
+        set as a multiple of it rather than as an absolute, because pinning it
+        would leave the player no register control at the conical end.
         """
         beta = float(np.clip(beta, 0.0, 1.0))
         self.beta = beta
         p = self.parameters
 
-        # +1 blows open (lips), -1 blows closed (double reed). The zero
-        # crossing is a valve that scarcely responds to pressure at all.
-        self.striking = 1.0 - 2.0 * beta
-
         embouchure = p.lip_frequency if frequency is None else frequency
-        self._frequency = embouchure * _lerp(beta, 1.0, p.reed_frequency_ratio)
-        self._q = _lerp(beta, p.lip_q, p.reed_q)
-        self._width = _lerp(beta, p.lip_width, p.reed_width)
-        self._rest_opening = _lerp(beta, p.lip_rest_opening, p.reed_rest_opening)
-
-        closing = _lerp(beta, p.lip_closing_pressure, p.reed_closing_pressure)
-        omega = 2.0 * np.pi * self._frequency
-        # mu follows from "the pressure that just closes the valve":
-        # closing = mu * omega^2 * rest_opening.
-        self._inverse_mass = (omega**2 * self._rest_opening) / closing
+        self.lip.tune(
+            embouchure, p.lip_q, p.lip_width, p.lip_rest_opening,
+            p.lip_closing_pressure,
+        )
+        self.double.tune(
+            embouchure * p.reed_frequency_ratio, p.reed_q, p.reed_width,
+            p.reed_rest_opening, p.reed_closing_pressure,
+        )
 
     def step(self, mouth_pressure: float, returning_wave: float,
              impedance: float) -> float:
@@ -181,13 +253,13 @@ class Reed:
         # Pressure difference the valve would see at zero flow.
         incident = mouth_pressure - 2.0 * returning_wave
 
-        area = self._width * max(self.opening, 0.0)
+        # Both valves see the same pressure difference and vent into the same
+        # bore, so they behave as one opening of the blended area -- which keeps
+        # the coupled solve a single quadratic rather than a pair of them.
+        area = self.effective_area
         if area > 0.0:
-            # U = area sqrt(2 |dp| / rho) with dp = incident - Zc U, solved
-            # exactly as a quadratic rather than iterated.
             k = 2.0 * area**2 / self.air.density
-            magnitude = abs(incident)
-            discriminant = (k * impedance) ** 2 + 4.0 * k * magnitude
+            discriminant = (k * impedance) ** 2 + 4.0 * k * abs(incident)
             flow = 0.5 * (-k * impedance + np.sqrt(discriminant))
             flow = np.copysign(flow, incident)
         else:
@@ -195,25 +267,8 @@ class Reed:
 
         pressure_difference = incident - impedance * flow
 
-        # Trapezoidal-ish integration of the valve; stable at these rates.
         dt = 1.0 / self.sample_rate
-        omega = 2.0 * np.pi * self._frequency
-        acceleration = (
-            self.striking * pressure_difference * self._inverse_mass
-            - (omega / self._q) * self.velocity
-            - omega**2 * (self.opening - self._rest_opening)
-        )
-        self.velocity += acceleration * dt
-        self.opening += self.velocity * dt
-
-        # The valve cannot open past a hard stop, nor close past shut.
-        if self.opening < 0.0:
-            self.opening = 0.0
-            if self.velocity < 0.0:
-                self.velocity = 0.0
-        elif self.opening > 3.0 * self._rest_opening:
-            self.opening = 3.0 * self._rest_opening
-            if self.velocity > 0.0:
-                self.velocity = 0.0
+        self.lip.advance(pressure_difference, dt)
+        self.double.advance(pressure_difference, dt)
 
         return returning_wave + impedance * flow

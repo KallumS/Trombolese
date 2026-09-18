@@ -65,6 +65,8 @@ class SectionedBore:
     reflections: np.ndarray
     losses: np.ndarray
     dispersion: np.ndarray
+    vent_index: int | None
+    vent_cutoff: float
     section_length: float
     sample_rate: float
     air: Air
@@ -95,6 +97,7 @@ def section_bore(
     sample_rate: float = 48_000.0,
     loss_reference_hz: float = 250.0,
     dispersion_reference_hz: float | None = None,
+    vent_opening: float = 0.0,
 ) -> SectionedBore:
     """Resample an instrument's bore onto the waveguide's section grid.
 
@@ -174,15 +177,67 @@ def section_bore(
     excess = attenuation_ref * section_length * sample_rate / omega_ref
     dispersion = excess / (1.0 + excess)
 
+    vent_index, vent_cutoff = _vent_coefficients(
+        instrument, alpha, slide, radii, section_length, n_sections, vent_opening
+    )
+
     return SectionedBore(
         radii=radii,
         reflections=reflections,
         losses=losses,
         dispersion=dispersion,
+        vent_index=vent_index,
+        vent_cutoff=vent_cutoff,
         section_length=section_length,
         sample_rate=sample_rate,
         air=air,
     )
+
+
+def _vent_coefficients(
+    instrument: Trombolese,
+    alpha: float,
+    slide: float,
+    radii: np.ndarray,
+    section_length: float,
+    n_sections: int,
+    opening: float,
+) -> tuple[int | None, float]:
+    """Locate the register vent in the ladder and find its corner frequency.
+
+    A side hole shunts the bore through the inertance of the air in it,
+    ``Z_h = j omega rho t_e / S_h``. Solving the three-port junction with that
+    shunt gives, for the junction pressure,
+
+        p = a * j omega / (j omega + Zc / (2 L_h))
+
+    -- a first-order **high-pass**, with ``a`` the sum of the two arriving
+    waves. Which is the register hole's whole behaviour in one line: low
+    frequencies are shorted to the outside and lost, high ones sail past. The
+    corner is proportional to the open area, so a partly open vent simply moves
+    it down, and a shut one puts it at zero, where the high-pass becomes a
+    wire.
+    """
+    if instrument.vent is None or opening <= 0.0:
+        return None, 0.0
+
+    air = instrument.air
+    lead_in = 0.0
+    if instrument.include_mouthpiece:
+        cup_length = (1.0 - alpha) * instrument.cup_length + alpha * instrument.staple_length
+        lead_in = cup_length + instrument.cup_throat_length
+
+    bore_length = instrument.bore_length_at(alpha) + slide
+    distance = lead_in + bore_length * instrument.vent_position_at(alpha)
+    index = int(round(distance / section_length))
+    index = int(np.clip(index, 1, n_sections - 2))
+
+    hole_area = opening * np.pi * instrument.vent.radius**2
+    effective_height = instrument.vent.height + 1.5 * instrument.vent.radius
+    inertance = air.density * effective_height / hole_area
+
+    z_char = air.density * air.speed_of_sound / (np.pi * radii[index] ** 2)
+    return index, float(z_char / (2.0 * inertance))
 
 
 class Waveguide:
@@ -227,6 +282,9 @@ class Waveguide:
         self._dispersion_forward = np.zeros(bore.n_sections)
         self._dispersion_backward = np.zeros(bore.n_sections)
 
+        self._vent_input = 0.0
+        self._vent_output = 0.0
+
     def reset(self) -> None:
         self.forward[:] = 0.0
         self.backward[:] = 0.0
@@ -235,6 +293,8 @@ class Waveguide:
         self._write = 0
         self._dispersion_forward[:] = 0.0
         self._dispersion_backward[:] = 0.0
+        self._vent_input = 0.0
+        self._vent_output = 0.0
 
     def adopt(self, bore: SectionedBore) -> None:
         """Take on new geometry mid-note, carrying the wave state across.
@@ -320,6 +380,22 @@ class Waveguide:
 
         # Mouthpiece: whatever the excitation injects.
         new_forward[0] = injected
+
+        # Register vent: a high-pass three-port, replacing the plain junction
+        # at that one section. The taper's own reflection there is a part in a
+        # thousand and is simply given up in exchange.
+        vent = self.bore.vent_index
+        if vent is not None:
+            arriving_right = forward[vent]
+            arriving_left = backward[vent + 1]
+            total = arriving_right + arriving_left
+            pole = float(np.exp(-self.bore.vent_cutoff / self.bore.sample_rate))
+            self._vent_output = pole * (
+                self._vent_output + total - self._vent_input
+            )
+            self._vent_input = total
+            new_forward[vent + 1] = self._vent_output - arriving_left
+            new_backward[vent] = self._vent_output - arriving_right
 
         # Each section's one-pole: the wall drag that slows the wave.
         g = self.bore.dispersion

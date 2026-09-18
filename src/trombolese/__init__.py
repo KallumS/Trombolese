@@ -47,16 +47,28 @@ from .analysis import (
     HarmonicFit,
     MorphScan,
     Resonances,
+    VentPlacement,
     compensate_pitch,
+    evaluate_vent,
     find_resonances,
+    find_vent_position,
+    fit_register_vent,
     harmonic_fit,
     pitch_neutral,
     scan_morph,
+    schedule_vent,
 )
-from .bore import BoreResponse, PitchCompensation, Segment, Trombolese
+from .bore import (
+    BoreResponse,
+    PitchCompensation,
+    RegisterVent,
+    Segment,
+    Trombolese,
+    VentSchedule,
+)
 from .constants import AIR_20C, Air
 from .reed import Reed, ReedParameters
-from .synth import Controls, Voice
+from .synth import Controls, ReedCompensation, Voice, compensate_reed_morph
 from .waveguide import (
     SectionedBore,
     Waveguide,
@@ -81,6 +93,14 @@ __all__ = [
     "PitchCompensation",
     "compensate_pitch",
     "pitch_neutral",
+    # register vent
+    "RegisterVent",
+    "VentSchedule",
+    "VentPlacement",
+    "evaluate_vent",
+    "find_vent_position",
+    "schedule_vent",
+    "fit_register_vent",
     "wavenumber",
     "radiation_impedance",
     "cylinder_matrix",
@@ -97,6 +117,8 @@ __all__ = [
     "ReedParameters",
     "Voice",
     "Controls",
+    "ReedCompensation",
+    "compensate_reed_morph",
 ]
 
 __version__ = "0.1.0"

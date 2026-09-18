@@ -68,14 +68,57 @@ from .acoustics import (
     cylinder_matrix,
     input_impedance,
     radiation_impedance,
+    shunt_matrix,
+    tonehole_impedance,
 )
 from .constants import AIR_20C, Air
 
-__all__ = ["Trombolese", "BoreResponse", "Segment", "PitchCompensation"]
+__all__ = ["Trombolese", "BoreResponse", "Segment", "PitchCompensation",
+           "RegisterVent", "VentSchedule"]
 
 
 def _lerp(alpha: float, at_zero: float, at_one: float) -> float:
     return (1.0 - alpha) * at_zero + alpha * at_one
+
+
+@dataclass(frozen=True)
+class RegisterVent:
+    """A side hole that spoils the bore's lower regimes when opened.
+
+    ``position`` is a fraction along the morphable bore, from the mouthpiece
+    end. Because the bore's length changes with the morph and the slide, a
+    fractional position keeps the vent at the same *acoustic* place rather than
+    the same physical distance -- which is what a fixed hole in a real
+    instrument could never manage, and is why this one can stay useful across
+    a morph that a real instrument could not perform anyway.
+    """
+
+    position: float = 0.33
+    radius: float = 0.0040
+    height: float = 0.0060
+
+
+@dataclass(frozen=True)
+class VentSchedule:
+    """Where the register vent should sit, as a function of the morph.
+
+    A register hole works by sitting at a pressure node of the regime it is
+    meant to preserve. On a fixed instrument that spot is found once and
+    drilled. Here the bore changes shape while the instrument plays, so the
+    node moves -- from 16% along the bore at the cylindrical end to 26% at the
+    conical one -- and a hole drilled for one end is in the wrong place at the
+    other.
+
+    Since this instrument exists only as a model, the vent can simply travel.
+    Built by :func:`trombolese.analysis.schedule_vent`.
+    """
+
+    alphas: np.ndarray
+    positions: np.ndarray
+    regime: int
+
+    def position_at(self, alpha: float) -> float:
+        return float(np.interp(alpha, self.alphas, self.positions))
 
 
 @dataclass(frozen=True)
@@ -86,6 +129,7 @@ class Segment:
     radius_in: float
     radius_out: float
     length: float
+    vent_after: RegisterVent | None = None
 
     @property
     def is_cylindrical(self) -> bool:
@@ -209,6 +253,14 @@ class Trombolese:
     #: move. Build one with :func:`trombolese.analysis.compensate_pitch`.
     pitch_compensation: PitchCompensation | None = None
 
+    #: A register vent, if fitted. Its opening is a per-note control passed to
+    #: :meth:`response`, not a property of the geometry.
+    vent: RegisterVent | None = None
+
+    #: Where that vent sits at each morph position. Without one the vent stays
+    #: wherever ``vent.position`` puts it, which is right for at most one alpha.
+    vent_schedule: VentSchedule | None = None
+
     air: Air = field(default_factory=lambda: AIR_20C)
 
     # -- geometry ---------------------------------------------------------
@@ -263,16 +315,25 @@ class Trombolese:
         This is the single source of truth for the geometry: :meth:`profile`
         and :meth:`sweep` are both built from it.
 
-        A slide extension lengthens the taper rather than inserting cylindrical
-        tubing at its throat. On a real trombone the slide has to be a
+        The slide is a signed trim, not only an extension. Lengthening it
+        flattens the instrument as a trombone's does; negative values shorten
+        it, which has no counterpart on a real slide but is what lets the reed
+        morph be tuned out -- an inward-striking valve sounds a resonance flat
+        where an outward-striking one sounds it sharp, and no embouchure can
+        cancel that, only a change of length.
+
+        Either way the extension lengthens the taper rather than inserting
+        cylindrical tubing at its throat. On a real trombone the slide has to be a
         cylinder, but inserting one here would reintroduce exactly the problem
         described in the module docstring; stretching the taper keeps the bore
         a single clean frustum at every slide position, so the slide changes
         pitch without disturbing the mode structure.
         """
         self._check_alpha(alpha)
-        if slide < 0.0:
-            raise ValueError("slide extension must be non-negative")
+        if self.bore_length_at(alpha) + slide <= 0.0:
+            raise ValueError(
+                f"slide of {slide:.3f} m leaves no bore at alpha={alpha:.3f}"
+            )
 
         parts: list[Segment] = []
 
@@ -286,14 +347,24 @@ class Trombolese:
                 Segment("cup_throat", throat_r, throat_r, self.cup_throat_length)
             )
 
-        parts.append(
-            Segment(
-                "bore",
-                self.throat_radius(alpha),
-                self.bell_entry_radius(alpha),
-                self.bore_length_at(alpha) + slide,
+        throat = self.throat_radius(alpha)
+        entry = self.bell_entry_radius(alpha)
+        length = self.bore_length_at(alpha) + slide
+
+        if self.vent is None:
+            parts.append(Segment("bore", throat, entry, length))
+        else:
+            # Split the bore at the vent so a shunt can be inserted between the
+            # halves. The radius there follows the taper, which is linear.
+            fraction = float(np.clip(self.vent_position_at(alpha), 1e-3, 1.0 - 1e-3))
+            at_vent = throat + (entry - throat) * fraction
+            parts.append(
+                Segment("bore", throat, at_vent, length * fraction,
+                        vent_after=self.vent)
             )
-        )
+            parts.append(
+                Segment("bore", at_vent, entry, length * (1.0 - fraction))
+            )
 
         radii = self.bell_radii(alpha)
         step = self.bell_length / self.bell_segments
@@ -331,12 +402,27 @@ class Trombolese:
             return cylinder_matrix(freqs, seg.radius_in, seg.length, self.air)
         return cone_matrix(freqs, seg.radius_in, seg.radius_out, seg.length, self.air)
 
+    def vent_position_at(self, alpha: float) -> float:
+        """Where along the bore the vent sits, as a fraction from the throat."""
+        if self.vent is None:
+            raise ValueError("no vent fitted")
+        if self.vent_schedule is None:
+            return self.vent.position
+        return self.vent_schedule.position_at(alpha)
+
+    def vent_radius_at(self, alpha: float) -> float:
+        """Bore radius where the vent sits."""
+        throat = self.throat_radius(alpha)
+        entry = self.bell_entry_radius(alpha)
+        return throat + (entry - throat) * self.vent_position_at(alpha)
+
     def response(
         self,
         freqs: np.ndarray,
         alpha: float = 0.0,
         slide: float = 0.0,
         ideal_open_end: bool = False,
+        vent_opening: float = 0.0,
     ) -> BoreResponse:
         """Input impedance seen by the reed, over ``freqs``.
 
@@ -353,7 +439,7 @@ class Trombolese:
             Unphysical, but it reproduces textbook results exactly and so is
             useful in tests.
         """
-        return self.sweep(freqs, (alpha,), slide, ideal_open_end)[0]
+        return self.sweep(freqs, (alpha,), slide, ideal_open_end, vent_opening)[0]
 
     def sweep(
         self,
@@ -361,6 +447,7 @@ class Trombolese:
         alphas: Sequence[float],
         slide: float = 0.0,
         ideal_open_end: bool = False,
+        vent_opening: float = 0.0,
     ) -> list[BoreResponse]:
         """Input impedance at several morph positions.
 
@@ -376,10 +463,18 @@ class Trombolese:
 
         responses: list[BoreResponse] = []
         for alpha in alphas:
-            matrices = [
-                self._segment_matrix(freqs, seg)
-                for seg in self.segments(float(alpha), slide)
-            ]
+            matrices = []
+            for seg in self.segments(float(alpha), slide):
+                matrices.append(self._segment_matrix(freqs, seg))
+                if seg.vent_after is not None:
+                    matrices.append(
+                        shunt_matrix(
+                            tonehole_impedance(
+                                freqs, seg.vent_after.radius,
+                                seg.vent_after.height, vent_opening, self.air,
+                            )
+                        )
+                    )
             responses.append(
                 BoreResponse(
                     freqs=freqs,

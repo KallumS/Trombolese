@@ -345,3 +345,183 @@ def pitch_neutral(instrument: Trombolese, **kwargs) -> Trombolese:
     return replace(
         instrument, pitch_compensation=compensate_pitch(instrument, **kwargs)
     )
+
+
+@dataclass
+class VentPlacement:
+    """Where to put a register vent, and how well it works there."""
+
+    position: float
+    target_frequency: float
+    vented_frequency: float
+    promotion_db: float
+    detune_cents: float
+
+    @property
+    def is_usable(self) -> bool:
+        """Does it actually promote the target without dragging it off pitch?"""
+        return self.promotion_db > 3.0 and abs(self.detune_cents) < 120.0
+
+
+def evaluate_vent(
+    instrument: Trombolese,
+    freqs: np.ndarray,
+    alpha: float,
+    regime: int,
+    slide: float = 0.0,
+    fmax: float = 900.0,
+) -> VentPlacement:
+    """Score the fitted vent at one morph position, for one target regime.
+
+    A register vent earns its place by making the target regime the *strongest*
+    one available, so the excitation settles on it rather than on something
+    below. The score is therefore how far the target's impedance peak stands
+    above the best peak still left underneath it -- which is exactly the margin
+    the reed has to choose by.
+    """
+    if instrument.vent is None:
+        raise ValueError("no vent fitted")
+
+    closed = find_resonances(
+        instrument.response(freqs, alpha=alpha, slide=slide, vent_opening=0.0),
+        fmax=fmax, max_count=regime,
+    )
+    if len(closed) < regime:
+        return VentPlacement(instrument.vent.position, float("nan"),
+                             float("nan"), -np.inf, float("nan"))
+    target = float(closed.freqs[regime - 1])
+
+    opened = find_resonances(
+        instrument.response(freqs, alpha=alpha, slide=slide, vent_opening=1.0),
+        fmax=fmax, max_count=12,
+    )
+    if len(opened) == 0:
+        return VentPlacement(instrument.vent.position, target, float("nan"),
+                             -np.inf, float("nan"))
+
+    nearest = int(np.argmin(np.abs(opened.freqs - target)))
+    kept = float(opened.freqs[nearest])
+    kept_db = float(opened.magnitudes_db[nearest])
+
+    below = opened.magnitudes_db[opened.freqs < kept * 0.92]
+    # Nothing left underneath is the ideal outcome, but it must be scored as a
+    # finite success. Left as an infinity it beats every real placement,
+    # including the ones that achieved it by destroying the target as well.
+    rival_db = float(np.max(below)) if len(below) else kept_db - 40.0
+
+    return VentPlacement(
+        position=instrument.vent.position,
+        target_frequency=target,
+        vented_frequency=kept,
+        promotion_db=kept_db - rival_db,
+        detune_cents=1200.0 * np.log2(kept / target),
+    )
+
+
+def find_vent_position(
+    instrument: Trombolese,
+    freqs: np.ndarray,
+    alpha: float,
+    regime: int = 3,
+    candidates: np.ndarray | None = None,
+    slide: float = 0.0,
+    max_detune_cents: float = 60.0,
+) -> VentPlacement:
+    """Scan vent positions and return the best one for a target regime.
+
+    A register hole works by sitting near a pressure *node* of the regime it is
+    meant to preserve -- where that regime barely notices it -- while sitting
+    away from the nodes of everything below, which it duly ruins. On a fixed
+    instrument that position is worked out once. Here the bore changes shape
+    underneath it, so the right position moves with ``alpha``, and it is
+    cheaper to search for it than to derive it.
+    """
+    from dataclasses import replace as _replace
+
+    from .bore import RegisterVent
+
+    if candidates is None:
+        candidates = np.linspace(0.08, 0.70, 32)
+
+    template = instrument.vent or RegisterVent()
+    placements = []
+    for position in candidates:
+        trial = _replace(
+            instrument, vent=_replace(template, position=float(position))
+        )
+        placements.append(evaluate_vent(trial, freqs, alpha, regime, slide))
+
+    # Holding the target's pitch is a constraint, not something to trade away:
+    # a vent that promotes brilliantly by moving the note somewhere else has
+    # not promoted the note. Rank only among placements that keep it.
+    faithful = [
+        p for p in placements
+        if np.isfinite(p.detune_cents) and abs(p.detune_cents) <= max_detune_cents
+    ]
+    pool = faithful or placements
+    best = max(pool, key=lambda p: p.promotion_db)
+
+    # A regime has several pressure nodes, and a vent at any of them promotes
+    # it. They are not equivalent: a vent further along the bore sits at a node
+    # of different lower regimes and so spoils a different set, and the choice
+    # jumps between nodes from one morph position to the next, leaving a
+    # schedule that lurches. Take the earliest node that does essentially as
+    # well, which keeps the schedule smooth and the vent near the throat.
+    contenders = [p for p in pool if p.promotion_db >= best.promotion_db - 3.0]
+    return min(contenders, key=lambda p: p.position)
+
+
+def schedule_vent(
+    instrument: Trombolese,
+    freqs: np.ndarray,
+    regime: int = 3,
+    n_alpha: int = 9,
+    slide: float = 0.0,
+    max_detune_cents: float = 60.0,
+) -> "VentSchedule":
+    """Find the vent position that promotes ``regime`` at each morph position.
+
+    Returns a schedule the instrument consults instead of a fixed position, so
+    the vent tracks the pressure node as the bore changes shape underneath it.
+    """
+    from .bore import RegisterVent, VentSchedule
+
+    base = replace(instrument, vent_schedule=None)
+    if base.vent is None:
+        base = replace(base, vent=RegisterVent())
+
+    alphas = np.linspace(0.0, 1.0, n_alpha)
+    positions = np.array([
+        find_vent_position(
+            base, freqs, float(a), regime, slide=slide,
+            max_detune_cents=max_detune_cents,
+        ).position
+        for a in alphas
+    ])
+    return VentSchedule(alphas=alphas, positions=positions, regime=regime)
+
+
+def fit_register_vent(
+    instrument: Trombolese,
+    freqs: np.ndarray,
+    regime: int = 3,
+    n_alpha: int = 9,
+    radius: float = 0.0040,
+    height: float = 0.0060,
+) -> Trombolese:
+    """Fit a register vent and schedule it across the morph.
+
+    >>> from trombolese import Trombolese, fit_register_vent
+    >>> import numpy as np
+    >>> vented = fit_register_vent(Trombolese(), np.linspace(20, 900, 20_000))
+    """
+    from .bore import RegisterVent
+
+    fitted = replace(
+        instrument, vent=RegisterVent(radius=radius, height=height),
+        vent_schedule=None,
+    )
+    return replace(
+        fitted,
+        vent_schedule=schedule_vent(fitted, freqs, regime, n_alpha),
+    )

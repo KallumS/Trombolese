@@ -83,6 +83,7 @@ class TestLadder:
         bore = SectionedBore(
             radii=np.full(n, 0.007), reflections=np.zeros(n - 1),
             losses=np.ones(n), dispersion=np.zeros(n),
+            vent_index=None, vent_cutoff=0.0,
             section_length=AIR_20C.speed_of_sound / SAMPLE_RATE,
             sample_rate=SAMPLE_RATE, air=AIR_20C,
         )
@@ -182,6 +183,7 @@ class TestAgreementWithStageOne:
         uncorrected = SectionedBore(
             radii=corrected.radii, reflections=corrected.reflections,
             losses=corrected.losses, dispersion=np.zeros_like(corrected.dispersion),
+            vent_index=None, vent_cutoff=0.0,
             section_length=corrected.section_length,
             sample_rate=corrected.sample_rate, air=corrected.air,
         )

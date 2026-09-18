@@ -21,6 +21,9 @@ Five continuous dimensions, of which only three have any precedent:
     The bore morph, cylinder to cone. **No precedent.**
 ``beta``
     The reed morph, lips to double reed. **No precedent.**
+``vent``
+    The register vent, shut to open. A woodwind's octave key, except that this
+    one travels along the bore as the morph changes where the pressure node is.
 
 ``alpha`` and ``beta`` are independent, so a double reed can be put on a
 cylindrical bore or brass lips on a conical one -- pairings no instrument
@@ -29,6 +32,7 @@ family has ever had to make a decision about.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -37,7 +41,7 @@ from .bore import Trombolese
 from .reed import Reed, ReedParameters
 from .waveguide import SectionedBore, Waveguide, section_bore
 
-__all__ = ["Controls", "Voice"]
+__all__ = ["Controls", "Voice", "ReedCompensation", "compensate_reed_morph"]
 
 
 @dataclass
@@ -49,6 +53,75 @@ class Controls:
     slide: float = 0.0
     alpha: float = 0.0
     beta: float = 0.0
+    vent: float = 0.0
+
+
+@dataclass(frozen=True)
+class ReedCompensation:
+    """Embouchure correction that stops the reed morph dragging the pitch.
+
+    ``beta`` changes the valve's natural frequency, because the embouchure
+    control is deliberately kept live at both ends of the morph -- pinning the
+    double-reed end to an absolute frequency would leave the player no register
+    control at all. The cost is that sweeping ``beta`` alone walks the pitch,
+    by well over an octave across the full range.
+
+    The correction has two parts, because the drift has two causes.
+
+    **Which regime speaks** is set by the embouchure, so that part is corrected
+    by scaling it. Dividing by the valve's frequency ratio removes most of the
+    error, and the rest is measured rather than derived: what remains is not a
+    smooth detuning but steps between regimes, and only playing the instrument
+    reveals where they fall.
+
+    **Where inside that regime the note settles** cannot be corrected by
+    embouchure at all. An outward-striking valve sounds a bore resonance sharp
+    and an inward-striking one sounds it flat -- on this instrument, 217 cents
+    apart on the same regime -- because that is what the striking sign does.
+    Only a change of length moves it, so the second part of the correction is a
+    slide trim, and it goes negative: the reed end has to be shortened to meet
+    the pitch the lips were sounding.
+
+    Both parts are tabulated over ``alpha`` as well as ``beta``. That is not
+    caution: a correction calibrated at one bore shape and applied at another
+    is worse than none, missing by over an octave, because which regime the
+    reed grabs depends on the bore it is driving. The two morphs are not
+    separable and the correction is a surface, not a curve.
+
+    Built by :func:`compensate_reed_morph`.
+    """
+
+    alphas: np.ndarray
+    betas: np.ndarray
+    multipliers: np.ndarray
+    slide_offsets: np.ndarray
+    target_frequency: float
+
+    def multiplier_at(self, alpha: float, beta: float) -> float:
+        """Embouchure scaling, which keeps the same regime selected.
+
+        Looked up by **nearest neighbour, not interpolated**. This entry's job
+        is to pick a regime, and a regime is a discrete thing: between two grid
+        points that chose different ones there is no meaningful value in
+        between, and blending them lands on a third regime and misses by an
+        octave. Measured, that is exactly what happened -- a table whose every
+        grid point was within 26 cents produced 1200-cent errors at the points
+        between them. Snapping to the nearer grid point keeps the choice a
+        choice.
+        """
+        row = int(np.argmin(np.abs(self.alphas - alpha)))
+        column = int(np.argmin(np.abs(self.betas - beta)))
+        return float(self.multipliers[row, column])
+
+    def slide_at(self, alpha: float, beta: float) -> float:
+        """Length trim, which absorbs the reed's pull on that regime.
+
+        Bilinear, unlike the multiplier: once the regime is fixed, pitch varies
+        smoothly with length, so interpolating here is not only safe but what
+        keeps the correction from stepping audibly between grid points.
+        """
+        rows = np.array([np.interp(beta, self.betas, r) for r in self.slide_offsets])
+        return float(np.interp(alpha, self.alphas, rows))
 
 
 @dataclass
@@ -72,6 +145,10 @@ class Voice:
     reed_parameters: ReedParameters = field(default_factory=ReedParameters)
     dispersion_reference_hz: float = 150.0
 
+    #: Applied to the embouchure so that morphing the reed does not move the
+    #: pitch. Build one with :func:`compensate_reed_morph`.
+    reed_compensation: ReedCompensation | None = None
+
     def __post_init__(self) -> None:
         self._bore = self._section(0.0, 0.0)
         self._guide = Waveguide(self._bore)
@@ -79,21 +156,23 @@ class Voice:
                           self.instrument.air)
         self._dc_state = 0.0
         self._previous_radiated = 0.0
-        self._geometry_key: tuple[float, float] | None = None
+        self._geometry_key: tuple[float, float, float] | None = None
 
-    def _section(self, alpha: float, slide: float) -> SectionedBore:
+    def _section(self, alpha: float, slide: float,
+                 vent: float = 0.0) -> SectionedBore:
         return section_bore(
             self.instrument, alpha, slide, self.sample_rate,
             dispersion_reference_hz=self.dispersion_reference_hz,
+            vent_opening=vent,
         )
 
-    def _apply_geometry(self, alpha: float, slide: float) -> None:
+    def _apply_geometry(self, alpha: float, slide: float, vent: float) -> None:
         """Re-section the bore, but only when the controls have actually moved."""
-        key = (round(alpha, 4), round(slide, 5))
+        key = (round(alpha, 4), round(slide, 5), round(vent, 3))
         if key == self._geometry_key:
             return
         self._geometry_key = key
-        self._bore = self._section(alpha, slide)
+        self._bore = self._section(alpha, slide, vent)
         self._guide.adopt(self._bore)
 
     def render(
@@ -118,9 +197,19 @@ class Voice:
             if automation is not None:
                 controls = automation(start / max(n_samples - 1, 1))
 
-            self._apply_geometry(controls.alpha, controls.slide)
+            embouchure = controls.lip_frequency
+            slide = controls.slide
+            if self.reed_compensation is not None:
+                embouchure *= self.reed_compensation.multiplier_at(
+                    controls.alpha, controls.beta
+                )
+                slide += self.reed_compensation.slide_at(
+                    controls.alpha, controls.beta
+                )
+
+            self._apply_geometry(controls.alpha, slide, controls.vent)
             impedance = self._bore.characteristic_impedance(0)
-            self._reed.set_morph(controls.beta, controls.lip_frequency)
+            self._reed.set_morph(controls.beta, embouchure)
 
             for n in range(start, stop):
                 injected = self._reed.step(
@@ -143,3 +232,155 @@ class Voice:
         self._reed.reset()
         self._dc_state = 0.0
         self._previous_radiated = 0.0
+
+
+def _sounding_frequency(
+    voice: "Voice",
+    controls: Controls,
+    seconds: float = 0.8,
+    silence: float = 1e-3,
+) -> float:
+    """Play a note and report the frequency it settled on.
+
+    The default is long for a reason. Some notes sound one regime for the first
+    third of a second and then jump to the octave above and stay there, so a
+    shorter probe measures a transient and calls it the pitch. A calibration
+    built on those measurements looks perfect at its own grid points and is an
+    octave out when the note is actually held.
+    """
+    voice.reset()
+    output = voice.render(int(seconds * voice.sample_rate), controls)
+    tail = output[-8192:]
+    if np.sqrt(np.mean(tail**2)) < silence:
+        return float("nan")
+    spectrum = np.abs(np.fft.rfft(tail * np.hanning(len(tail))))
+    freqs = np.fft.rfftfreq(len(tail), 1.0 / voice.sample_rate)
+    return float(freqs[int(np.argmax(spectrum))])
+
+
+def compensate_reed_morph(
+    instrument,
+    embouchure: float = 176.0,
+    alphas: Sequence[float] = (0.0, 0.25, 0.5, 0.75, 1.0),
+    pressure: float = 4200.0,
+    n_beta: int = 9,
+    n_candidates: int = 19,
+    span: float = 3.2,
+    seconds: float = 0.8,
+    sample_rate: float = 48_000.0,
+    reed_parameters: ReedParameters | None = None,
+) -> ReedCompensation:
+    """Measure the correction that holds pitch across the reed morph.
+
+    For each ``(alpha, beta)`` this plays the instrument at a spread of
+    embouchures and keeps the one landing nearest the target, then trims the
+    length to remove whatever the embouchure could not reach.
+
+    The embouchure search is a scan rather than a root-find, deliberately: the
+    sounding pitch is not a continuous function of the embouchure, because the
+    note steps from one regime to the next, and a bisection would happily
+    converge on the wrong side of a step. The length trim afterwards *is*
+    solved directly, because within a regime frequency does go smoothly as one
+    over length.
+
+    Calibration takes a few minutes. It is an offline step whose result is a
+    small table.
+    """
+    parameters = reed_parameters or ReedParameters()
+    probe = Voice(
+        instrument, sample_rate=sample_rate, reed_parameters=parameters,
+        reed_compensation=None,
+    )
+
+    alphas = np.asarray(alphas, dtype=float)
+    betas = np.linspace(0.0, 1.0, n_beta)
+    multipliers = np.ones((len(alphas), n_beta))
+    slide_offsets = np.zeros((len(alphas), n_beta))
+
+    reference_alpha = float(alphas[len(alphas) // 2])
+    target = _sounding_frequency(
+        probe, Controls(pressure=pressure, lip_frequency=embouchure,
+                        alpha=reference_alpha, beta=0.0),
+        seconds=seconds,
+    )
+    if not np.isfinite(target):
+        raise ValueError("the instrument did not speak at beta = 0")
+
+    for row, alpha in enumerate(alphas):
+        nominal = instrument.bore_length_at(float(alpha))
+
+        for column, beta in enumerate(betas):
+            analytic = 1.0 / (
+                1.0 + float(beta) * (parameters.reed_frequency_ratio - 1.0)
+            )
+            candidates = analytic * np.geomspace(1.0 / span, span, n_candidates)
+
+            scored = []
+            for multiplier in candidates:
+                sounded = _sounding_frequency(
+                    probe,
+                    Controls(pressure=pressure,
+                             lip_frequency=embouchure * multiplier,
+                             alpha=float(alpha), beta=float(beta)),
+                    seconds=seconds,
+                )
+                if np.isfinite(sounded):
+                    scored.append(
+                        (abs(1200.0 * np.log2(sounded / target)), float(multiplier))
+                    )
+
+            if not scored:
+                multipliers[row, column] = analytic
+                continue
+
+            # Several embouchures can land equally near the target, on
+            # different regimes. Picking the outright winner each time makes
+            # the table jump between them, and the damage shows up not at the
+            # grid points -- each of which is individually fine -- but *between*
+            # them, where interpolating across such a jump lands on a third
+            # regime entirely and misses by an octave. So among the entries
+            # doing essentially as well, take the one nearest its already-known
+            # neighbours: the previous beta in this row, and the same beta in
+            # the row below. Smoothness in both directions is what makes the
+            # surface safe to interpolate.
+            best_error = min(error for error, _ in scored)
+            contenders = [m for error, m in scored if error <= best_error + 25.0]
+
+            neighbours = []
+            if column > 0:
+                neighbours.append(multipliers[row, column - 1])
+            if row > 0:
+                neighbours.append(multipliers[row - 1, column])
+            anchor = (
+                float(np.exp(np.mean(np.log(neighbours)))) if neighbours
+                else analytic
+            )
+            multipliers[row, column] = min(
+                contenders, key=lambda m: abs(np.log(m / anchor))
+            )
+
+            # Whatever the embouchure could not reach is the reed's pull on the
+            # regime. Frequency goes as one over length, so the trim follows in
+            # closed form; one refinement covers the nonlinearity.
+            for _ in range(2):
+                sounded = _sounding_frequency(
+                    probe,
+                    Controls(pressure=pressure,
+                             lip_frequency=embouchure * multipliers[row, column],
+                             alpha=float(alpha), beta=float(beta),
+                             slide=float(slide_offsets[row, column])),
+                    seconds=seconds,
+                )
+                if not np.isfinite(sounded):
+                    break
+                residual = 1200.0 * np.log2(sounded / target)
+                length = nominal + slide_offsets[row, column]
+                slide_offsets[row, column] = float(np.clip(
+                    length * 2.0 ** (residual / 1200.0) - nominal,
+                    -0.6 * nominal, 1.5 * nominal,
+                ))
+
+    return ReedCompensation(
+        alphas=alphas, betas=betas, multipliers=multipliers,
+        slide_offsets=slide_offsets, target_frequency=float(target),
+    )

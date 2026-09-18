@@ -74,9 +74,16 @@ class TestGeometry:
             with pytest.raises(ValueError):
                 instrument.segments(bad)
 
-    def test_rejects_negative_slide(self, instrument: Trombolese) -> None:
+    def test_slide_is_a_signed_trim(self, instrument: Trombolese) -> None:
+        """Negative slide shortens the bore, which is how the reed morph is tuned out."""
+        shortened = instrument.total_length(0.5, -0.2)
+        assert shortened == pytest.approx(instrument.total_length(0.5) - 0.2)
+
+    def test_rejects_a_slide_that_removes_the_bore(
+        self, instrument: Trombolese
+    ) -> None:
         with pytest.raises(ValueError):
-            instrument.segments(0.5, -0.1)
+            instrument.segments(0.5, -instrument.bore_length_at(0.5) - 0.1)
 
 
 class TestMorphAcoustics:

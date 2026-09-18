@@ -50,6 +50,8 @@ __all__ = [
     "invert",
     "chain",
     "input_impedance",
+    "tonehole_impedance",
+    "shunt_matrix",
 ]
 
 # Below this relative change in radius across a segment, the cone's apex is so
@@ -282,3 +284,71 @@ def input_impedance(matrix: np.ndarray, load: np.ndarray) -> np.ndarray:
     c = matrix[..., 1, 0]
     d = matrix[..., 1, 1]
     return (a * load + b) / (c * load + d)
+
+
+def tonehole_impedance(
+    freqs: np.ndarray,
+    hole_radius: float,
+    hole_height: float,
+    opening: float = 1.0,
+    air: Air = AIR_20C,
+) -> np.ndarray:
+    """Shunt impedance of a side hole in the bore wall, in acoustic ohms.
+
+    An open hole is dominated by the **inertance** of the plug of air in it,
+    ``Z = j omega rho t_e / S_h``, plus the radiation impedance of its own
+    little opening. The effective height ``t_e`` adds about 1.5 hole radii to
+    the physical height, for the flow that spreads out at either end.
+
+    That the impedance rises with frequency is the whole point of a register
+    hole. Low frequencies see a near short circuit to the outside and are
+    spoiled; high ones see an impedance large enough to ignore and carry on
+    past. So one small hole can suppress an instrument's lower regimes while
+    leaving an upper one essentially untouched -- which is exactly the control
+    the conical end of this instrument was missing.
+
+    Parameters
+    ----------
+    opening:
+        0 is shut, 1 fully open. Intermediate values scale the effective hole
+        area, so the vent can be operated continuously rather than as a switch.
+        A shut hole is not a hole: it is a small closed cavity, whose
+        compliance is returned instead so that the model stays continuous.
+    """
+    freqs = np.asarray(freqs, dtype=float)
+    opening = float(np.clip(opening, 0.0, 1.0))
+    omega = 2.0 * np.pi * freqs
+
+    area = np.pi * hole_radius**2
+    effective_height = hole_height + 1.5 * hole_radius
+
+    # Shut: the hole is a closed cavity, a compliance. Huge at low frequency,
+    # which is to say it does nothing, which is correct.
+    volume = area * hole_height
+    closed = air.density * air.speed_of_sound**2 / (1j * omega * volume)
+
+    if opening <= 0.0:
+        return closed
+
+    open_area = opening * area
+    inertance = 1j * omega * air.density * effective_height / open_area
+    radiating = radiation_impedance(freqs, np.sqrt(open_area / np.pi), air)
+    opened = inertance + radiating
+
+    # Blend in admittance, where a partly open hole behaves sensibly.
+    admittance = opening / opened + (1.0 - opening) / closed
+    return 1.0 / admittance
+
+
+def shunt_matrix(impedance: np.ndarray) -> np.ndarray:
+    """Transfer matrix of an element shunting the bore to elsewhere.
+
+    Pressure is continuous across it and flow is not: some of the flow leaves
+    through the shunt. Shape ``(n_freq, 2, 2)``.
+    """
+    impedance = np.asarray(impedance, dtype=complex)
+    matrix = np.zeros(impedance.shape + (2, 2), dtype=complex)
+    matrix[..., 0, 0] = 1.0
+    matrix[..., 1, 0] = 1.0 / impedance
+    matrix[..., 1, 1] = 1.0
+    return matrix

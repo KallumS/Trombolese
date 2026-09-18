@@ -20,29 +20,49 @@ def dominant_frequency(signal: np.ndarray, sample_rate: float = SAMPLE_RATE) -> 
 
 
 class TestReed:
-    def test_striking_sign_flips_across_the_morph(self) -> None:
+    def test_the_two_valves_strike_oppositely(self) -> None:
         """Lips blow open, a double reed blows closed. That sign is the morph."""
         reed = Reed(SAMPLE_RATE)
-        reed.set_morph(0.0)
-        assert reed.striking == pytest.approx(1.0)
-        reed.set_morph(1.0)
-        assert reed.striking == pytest.approx(-1.0)
-        reed.set_morph(0.5)
-        assert reed.striking == pytest.approx(0.0)
+        assert reed.lip.striking == pytest.approx(1.0)
+        assert reed.double.striking == pytest.approx(-1.0)
 
-    def test_embouchure_controls_the_valve_at_both_ends(self) -> None:
+    def test_the_morph_crossfades_rather_than_crossing_zero(self) -> None:
+        """The midpoint must be half of each valve, not a valve of no character.
+
+        Running one coupling coefficient from +1 to -1 puts a zero at the
+        middle of the morph, where the valve stops responding to pressure and
+        the player loses the instrument. Both valves must keep full strength
+        throughout, with only their share of the aperture changing.
+        """
+        reed = Reed(SAMPLE_RATE)
+        for beta in (0.0, 0.25, 0.5, 0.75, 1.0):
+            reed.set_morph(beta, 176.0)
+            assert abs(reed.lip.striking) == pytest.approx(1.0)
+            assert abs(reed.double.striking) == pytest.approx(1.0)
+
+        reed.set_morph(0.5, 176.0)
+        assert reed.effective_area > 0.0
+
+    def test_embouchure_controls_both_valves(self) -> None:
         """Pinning the reed end to a fixed frequency would cost all pitch control."""
         reed = Reed(SAMPLE_RATE)
-        for beta in (0.0, 0.5, 1.0):
-            reed.set_morph(beta, frequency=100.0)
-            low = reed._frequency
-            reed.set_morph(beta, frequency=200.0)
-            assert reed._frequency > low
+        reed.set_morph(0.5, frequency=100.0)
+        low = (reed.lip.frequency, reed.double.frequency)
+        reed.set_morph(0.5, frequency=200.0)
+        assert reed.lip.frequency > low[0]
+        assert reed.double.frequency > low[1]
+
+    def test_the_double_reed_sits_above_the_embouchure(self) -> None:
+        """A double reed resonates well above the regimes it drives."""
+        reed = Reed(SAMPLE_RATE)
+        reed.set_morph(1.0, frequency=176.0)
+        assert reed.double.frequency > reed.lip.frequency
 
     def test_a_closed_valve_passes_no_flow(self) -> None:
         reed = Reed(SAMPLE_RATE)
         reed.set_morph(0.0, 110.0)
-        reed.opening = 0.0
+        reed.lip.opening = 0.0
+        reed.double.opening = 0.0
         injected = reed.step(5000.0, 0.0, 1.0e6)
         assert injected == pytest.approx(0.0)
 
@@ -55,24 +75,24 @@ class TestReed:
         """
         reed = Reed(SAMPLE_RATE)
         reed.set_morph(0.0, 110.0)
-        reed.opening = 3.0e-4
+        reed.lip.opening = 3.0e-4
         impedance = 8.4e5
         returning = 120.0
         mouth = 4000.0
 
+        area = reed.effective_area
         injected = reed.step(mouth, returning, impedance)
         flow = (injected - returning) / impedance
         difference = mouth - 2.0 * returning - impedance * flow
-        area = reed._width * 3.0e-4
         expected = area * np.sqrt(2.0 * abs(difference) / AIR_20C.density)
         assert flow == pytest.approx(np.copysign(expected, difference), rel=1e-6)
 
     def test_flow_reverses_with_the_pressure(self) -> None:
         reed = Reed(SAMPLE_RATE)
         reed.set_morph(0.0, 110.0)
-        reed.opening = 3.0e-4
+        reed.lip.opening = 3.0e-4
         forward = reed.step(4000.0, 0.0, 8.4e5)
-        reed.opening = 3.0e-4
+        reed.lip.opening = 3.0e-4
         backward = reed.step(-4000.0, 0.0, 8.4e5)
         assert forward > 0.0 > backward
 
@@ -81,7 +101,8 @@ class TestReed:
         reed.set_morph(1.0, 110.0)
         for _ in range(4000):
             reed.step(30_000.0, 0.0, 8.4e5)
-            assert reed.opening >= 0.0
+            assert reed.lip.opening >= 0.0
+            assert reed.double.opening >= 0.0
 
     def test_stays_finite_under_absurd_pressure(self) -> None:
         reed = Reed(SAMPLE_RATE)
