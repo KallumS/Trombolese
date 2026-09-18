@@ -540,8 +540,10 @@ src/trombolese/
     waveguide.py   the scattering ladder                       \
     reed.py        the morphable excitation                     > stage 2
     synth.py       the playable voice                          /
+docs/
+    SESSION-LOG.md the full design record: measurements and dead ends
 dsp/
-    trombolese.dsp the Faust port -- transliterated, NOT compiled
+    trombolese.dsp the Faust port -- partly verified, see its status block
 scripts/
     explore_morph.py   the design study: table and figures
     render_audio.py    the audio demonstrations

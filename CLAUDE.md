@@ -7,6 +7,12 @@ The README is the narrative. This file is the operational guidance and, mostly,
 the **traps** — the things that cost real time to find, that look fine until
 they are measured, and that are easy to break back.
 
+`docs/SESSION-LOG.md` is the full archive behind this file: every measurement,
+every disproved hypothesis, and the numbers this one only summarises. Go there
+before re-measuring anything, and before re-trying an approach that looks
+obviously better than what is here — several of them were tried and were
+worse.
+
 ---
 
 ## The one rule
