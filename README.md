@@ -289,7 +289,8 @@ as a trombone does.
 
 ## Hear it
 
-`python scripts/render_audio.py` writes five files to `audio/`:
+`python scripts/render_audio.py` writes five files to `audio/`, and a sixth
+with `--tune-reed`:
 
 | file | what it demonstrates |
 |------|----------------------|
@@ -298,6 +299,7 @@ as a trombone does.
 | `crescendo.wav` | the spectrum opening up with breath |
 | `reed-morph.wav` | lips toward double reed at a fixed bore |
 | `slide.wav` | ordinary continuous pitch, for reference |
+| `reed-morph-tuned.wav` | the same reed sweep with its pitch compensated (`--tune-reed`) |
 
 # Playing an instrument that does not exist
 
@@ -373,6 +375,64 @@ did — restores clean control:
 So the fix for the conical end was a tuning decision made two sections up, and
 the earlier diagnosis mistook a consequence for a cause.
 
+## Tuning the reed morph out
+
+`beta` dragged the pitch by 833 cents across its range. Fixing it turned up two
+structural problems before any correction was worth measuring.
+
+**The morph had a dead zone.** Running one coupling coefficient from +1 to −1
+puts a zero at the midpoint, where the valve stops responding to pressure
+altogether and the embouchure loses all authority over the instrument.
+Measured: 324 cents off target at `beta = 0.5` and unreachable by any
+embouchure, while every other position came within about 50. The morph is now a
+**crossfade between two valves**, one blowing open and one blowing closed, each
+keeping full coupling; their openings blend into one effective aperture, so the
+middle of the morph answers to pressure in both characters at once rather than
+in neither. That alone flattened the lower half of the morph to within 52
+cents unaided.
+
+**The drift has two causes, so the correction has two parts.** Which regime
+speaks is set by the embouchure, and that part is corrected by scaling it.
+Where inside that regime the note settles cannot be corrected by embouchure at
+all: an outward-striking valve sounds a bore resonance sharp and an
+inward-striking one sounds it flat — 217 cents apart on the same regime — so
+the second part is a length trim, and it goes negative. The slide became a
+signed trim for this.
+
+Both parts are tabulated over `alpha` as well as `beta`. That is not caution: a
+correction calibrated at one bore shape and applied at another misses by over
+an octave. The two morphs are not separable.
+
+The embouchure entry is looked up by **nearest neighbour, never interpolated**.
+It picks a regime, and a regime is discrete — between two grid points that
+chose different ones there is no meaningful value in between. Measured, a table
+whose every grid point was within 26 cents produced 1200-cent errors at the
+points between them until the lookup stopped blending. The length trim *is*
+interpolated, because once the regime is fixed pitch goes smoothly with length.
+
+### What it achieves, and where it does not
+
+| | drift |
+|---|---|
+| uncompensated | 833 cents |
+| compensated, on the calibration grid | **26 cents worst, 12 median, 0 of 24 points over 50** |
+| compensated, between grid points | 15 cents median, but **5 of 19 points jump an octave** |
+
+The off-grid failures are not a resolution problem. A denser grid was tried —
+9×9 instead of 5×9 — and verified *worse*, not better. They are points where
+the instrument genuinely settles on a neighbouring regime, and no lookup table
+fixes that, because the regime map has boundaries that no grid aligns with.
+Closing it needs something other than a table: pitch tracking in the loop, or a
+regime-locking term in the excitation.
+
+One more measurement worth recording because it contradicts the obvious
+reasoning. Some notes sound one regime for a third of a second and then jump to
+the octave above and stay there, so probe notes were lengthened from 0.3 s to
+0.8 s on the grounds that the shorter probe was measuring a transient. The
+resulting table verified distinctly worse — several grid points fell silent or
+landed an octave out. No mechanism is offered for that, only the measurement,
+and the default stayed at 0.3 s.
+
 ## The register vent
 
 A vent was built anyway, because it is a real mechanism this instrument was
@@ -408,6 +468,20 @@ compare against — holding the target's pitch is a constraint, not a quantity t
 trade away. And a regime has several nodes, all of which promote it, so the
 search jumped between them from one morph position to the next; taking the
 earliest node that does essentially as well keeps the schedule smooth.
+
+## Still not solved
+
+- **Notation.** There is no way to write a bore glissando. A second stave line
+  showing `alpha` against time, as a continuous contour, is the obvious start.
+- **The reed morph jumps an octave at some points between calibration nodes.**
+  Roughly a quarter of off-grid points. Not a resolution problem — a denser
+  grid was tried and was worse. It needs pitch tracking in the loop or a
+  regime-locking term in the excitation, not a bigger table.
+- **The register vent is a mechanism without a part to play yet.** It does what
+  a register key does, but the problem it was built for turned out to have a
+  different cause, and opening it while lipping fights the embouchure rather
+  than helping it. It wants a role in the fingering scheme — an octave key the
+  player operates deliberately — rather than an automatic one.
 
 # Where this goes next
 

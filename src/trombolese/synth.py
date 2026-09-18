@@ -266,7 +266,7 @@ def compensate_reed_morph(
     n_beta: int = 9,
     n_candidates: int = 19,
     span: float = 3.2,
-    seconds: float = 0.8,
+    seconds: float = 0.3,
     sample_rate: float = 48_000.0,
     reed_parameters: ReedParameters | None = None,
 ) -> ReedCompensation:

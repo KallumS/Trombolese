@@ -22,7 +22,8 @@ import soundfile as sf
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from trombolese import Trombolese, pitch_neutral  # noqa: E402
-from trombolese.synth import Controls, Voice  # noqa: E402
+from trombolese.reed import ReedParameters  # noqa: E402
+from trombolese.synth import Controls, Voice, compensate_reed_morph  # noqa: E402
 from trombolese.waveguide import tune_to_waveguide  # noqa: E402
 
 SAMPLE_RATE = 48_000
@@ -60,6 +61,10 @@ def main() -> None:
     parser.add_argument("--out", type=Path,
                         default=Path(__file__).resolve().parent.parent / "audio")
     parser.add_argument("--sample-rate", type=int, default=SAMPLE_RATE)
+    parser.add_argument("--tune-reed", action="store_true",
+                        help="calibrate the reed morph so it holds pitch, and "
+                             "render the tuned take alongside the untuned one "
+                             "(adds several minutes)")
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
 
@@ -70,7 +75,21 @@ def main() -> None:
     )
     held = instrument.pitch_compensation.target_f1
     print(f"  holding regime {PLAYING_REGIME} at {held:.2f} Hz across the morph")
-    voice = Voice(instrument, sample_rate=float(args.sample_rate))
+    parameters = ReedParameters(reed_frequency_ratio=2.0)
+    voice = Voice(instrument, sample_rate=float(args.sample_rate),
+                  reed_parameters=parameters)
+
+    tuned_voice = None
+    if args.tune_reed:
+        print("calibrating the reed morph (this takes a few minutes)...")
+        correction = compensate_reed_morph(
+            instrument, embouchure=held * 0.97, n_beta=9,
+            sample_rate=float(args.sample_rate), reed_parameters=parameters,
+        )
+        tuned_voice = Voice(
+            instrument, sample_rate=float(args.sample_rate),
+            reed_parameters=parameters, reed_compensation=correction,
+        )
 
     takes: dict[str, np.ndarray] = {}
 
@@ -135,6 +154,9 @@ def main() -> None:
         )
 
     takes["reed-morph"] = render(voice, seconds, reed_morph)
+    if tuned_voice is not None:
+        print("rendering reed-morph-tuned...")
+        takes["reed-morph-tuned"] = render(tuned_voice, seconds, reed_morph)
 
     # 5. The slide, for reference: ordinary continuous pitch.
     print("rendering slide...")
