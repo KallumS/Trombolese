@@ -438,22 +438,29 @@ octave (1214 cents at α=0, 1127 at α=1). The two morphs are not separable.
 
 ### Interpolation rule
 
-The embouchure entry is looked up by **nearest neighbour, never interpolated**
-— it picks a regime, and a regime is discrete. A table whose every grid point
-was within 26 cents produced 1200-cent errors *between* them until the lookup
-stopped blending. The slide trim *is* interpolated, since pitch goes smoothly
-with length once the regime is fixed.
+The embouchure entry was first looked up by **nearest neighbour, never
+interpolated** — it picks a regime, and a regime is discrete. A table whose
+every grid point was within 26 cents produced 1200-cent errors *between* them
+until the lookup stopped blending. The slide trim *is* interpolated, since
+pitch goes smoothly with length once the regime is fixed.
 
-### Result
+That rule was later refined to **interpolate within a plateau, snap across a
+cliff** — see the next section. Snapping everywhere turned out to be too blunt:
+most of the table is genuinely continuous, and stepping through it is audible
+under a sweep.
+
+### Result, before the off-grid gap was closed
 
 | condition | drift |
 |---|---|
 | uncompensated | 833 cents |
-| on the calibration grid | **26 c worst, 12 c median, 0 of 24 over 50** |
+| on the calibration grid | 26 c worst, 12 c median, 0 of 24 over 50 |
 | between grid points | 15 c median, **5 of 19 jump an octave** |
 
-Audio, same reed sweep: untuned rises 835 cents and stays; tuned holds
-198–200 Hz with one brief mid-sweep excursion.
+Audio at this point: untuned rises 835 cents and stays; tuned holds 198–200 Hz
+with one brief mid-sweep excursion.
+
+This is the state the next section starts from.
 
 ### Closing the off-grid gap
 
@@ -472,12 +479,28 @@ strongest at 164.7 dB), so which regime wins the loop-gain competition changes.
 0→1, walking it straight across regime boundaries. Worst jump between adjacent
 β steps, fixed embouchure:
 
-| ratio | 1.0 | 1.10 | 1.15 | 1.20 | 1.25 | 1.5 | 2.0 |
-|---|---|---|---|---|---|---|---|
-| worst adjacent jump | dead zone | 1226 c | 1226 c | 1226 c | **55 c** (α≤0.5) | 471 c | 969 c |
+Worst jump between adjacent β steps, **over the cylindrical half of the morph
+(α ≤ 0.5)**, which is where the ratios separate cleanly:
+
+| ratio | 1.0 | 1.25 | 1.5 | 2.0 |
+|---|---|---|---|---|
+| worst adjacent jump | silent dead zone | **55 c** | 471 c | 969 c |
 
 Ratio 1.0 opens a silent dead zone through the middle of the morph — both
-valves at the same frequency with opposite striking. 1.25 is the optimum.
+valves at the same frequency with opposite striking, so the aperture stops
+modulating. 1.25 is the optimum.
+
+**The α ≤ 0.5 qualification is load-bearing.** A later sweep of 1.10–1.25
+over α ∈ {0, 0.375, 0.75, 1.0} found *every* ratio jumping at high α: worst
+adjacent jump 1141 c at α=0.75 for ratio 1.10, 1114 c for 1.25, and at α=1.0
+ratio 1.25 gives 866 c where 2.0 gives only 333 c. So the ratio does not order
+the ratios consistently everywhere — it buys smoothness across most of the
+plane, and the α ≥ 0.75 corner is hard whatever the valve does. That corner is
+exactly what survives in the final result below.
+
+(One caveat on that sweep: the 1226 c figures it reported at α=0.375 came from
+the *first* β sample reading 393 Hz, an attack artefact on a fresh voice rather
+than a jump within the morph. The α=0.75 and α=1.0 figures are real.)
 
 **The lookup was generalised** from "always snap" to **interpolate within a
 plateau, snap across a cliff**, deciding from the four bracketing entries
@@ -577,10 +600,11 @@ Kept because each cost time and each looks plausible enough to be re-tried.
 | …is the bell's stepped approximation | removed bell | **Disproved.** Unchanged. |
 | Dispersion can be lumped at the termination | swept reference 60–1000 Hz | **Disproved.** Low regimes insensitive — the bell reflects them first. |
 | A per-section one-pole can match the √f law | analysed group delay | **Disproved.** A one-pole's delay is flat across 30–900 Hz. Exact at one frequency only. |
-| Longer calibration probes are more accurate | 0.8 s vs 0.3 s | **Disproved.** Table verified distinctly worse; points fell silent or landed an octave out. No mechanism known. |
+| Longer calibration probes are more accurate | 0.8 s vs 0.3 s, twice | **Disproved twice.** Verified distinctly *worse* under the cliff-ridden table, then *identically* under the smooth one, for 2.6× the cost. Whatever remains is not a settling problem. |
 | The register vent fixes conical-end register control | measured with and without | **Disproved.** Vent works, but the cause was the compensation target. Vent makes lipping worse. |
 | Voice state leaks across `reset()` | fresh vs reused voice at a failing point | **Disproved.** Both 199.0 Hz. The apparent contradiction was between two different calibration tables. |
-| A lower `reed_frequency_ratio` reduces drift enough on its own | ratios 1.5–3.5 | **Partly.** 324 c vs 1723 c uncompensated, but after compensation both sat at 217 c worst. Ratio 2.0 kept. |
+| A lower `reed_frequency_ratio` reduces drift enough on its own | ratios 1.5–3.5, before the crossfade and slide trim existed | **Superseded, and it was the answer.** Judged "partly" at the time because after compensation 1.5 and 3.5 both sat at 217 c worst, so ratio 2.0 was kept. Re-measured later across 1.0–2.0 it proved to be the whole fix: the ratio decides whether the valve crosses regime boundaries at all. See §7. Default is now 1.25. |
+| Higher blowing-pressure or aperture tuning fixes the conical end | parameter sweeps | **Not the lever.** The conical end's problem was the compensation target (§6); the reed morph's was the frequency ratio (§7). Neither was an amplitude parameter. |
 
 ### Process mistakes worth not repeating
 
@@ -630,6 +654,14 @@ Kept because each cost time and each looks plausible enough to be re-tried.
 | mouth reflection fit | gain 0.9477, pole 0.9200 |
 | end correction | 2 × 0.6133 × 108 mm ≈ 18.5 samples |
 
+### Reed compensation lookup
+
+| parameter | value | why |
+|---|---|---|
+| `PLATEAU_TOLERANCE` | 1.12 | separates "same regime" from "different regime" in the four bracketing entries. A plateau varies a few percent; the smallest regime step on this instrument is ~30% |
+| `n_candidates` | 19 | candidate *resolution* is not the place to economise: 10/15 grid points land at 9 candidates, 12/15 at 15, 15/15 at 19 |
+| `seconds` (probe) | 0.3 | 0.8 s measured identically for 2.6× the cost |
+
 ### Playing defaults
 
 - `pitch_neutral(..., regime=3)` then `tune_to_waveguide(..., regime=3)`
@@ -649,15 +681,21 @@ Kept because each cost time and each looks plausible enough to be re-tried.
 | `8ef0fea` | Faust valve verified against the Python reference |
 | `3a1ccc8` | Reed morph tuned out |
 | `7e54432` | CLAUDE.md |
+| `aa7dc81` | `docs/SESSION-LOG.md`, this file |
+| `763f23b` | Closed the reed compensation's off-grid gap |
 
-All on `claude/trombolese-format-qak2pz`. 123 tests at time of writing.
+All on `claude/trombolese-format-qak2pz`. 129 tests at time of writing.
 
 ---
 
 ## What remains
 
-1. Close the off-grid octave jumps in the reed compensation — needs pitch
-   tracking in the loop or a regime-locking term, not a bigger table.
+1. Close the **last** of the reed compensation's misses — about one point in
+   twenty, almost all at `alpha >= 0.75, beta >= 0.75`, worst case 720 cents at
+   one on-grid point. Most of the gap is closed (§7); what is left is where the
+   valve genuinely prefers a neighbouring regime rather than being
+   mis-tabulated, so it needs pitch tracking inside the loop. Four
+   table-shaped attempts are recorded in §9 as already failed.
 2. Replace the constant-delay dispersion with a fitted fractional-order filter
    (closes the remaining ~30 cents).
 3. Per-section one-pole losses for frequency-dependent damping.

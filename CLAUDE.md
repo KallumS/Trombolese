@@ -42,7 +42,7 @@ src/trombolese/
     synth.py       playable voice, controls, reed compensation                   /
 dsp/trombolese.dsp Faust port — partly verified, see its status block
 scripts/           explore_morph.py (study), render_audio.py (audio)
-tests/             123 tests
+tests/             129 tests
 ```
 
 ---
@@ -145,8 +145,12 @@ If that test fails, the loop delay is wrong — it must come to `2 * N` samples.
   consequential parameter in the excitation. The valve's resonance sweeps by
   this factor as `beta` runs 0→1, so a large one walks it across the bore's
   regime boundaries and the note jumps an octave mid-morph. Worst jump between
-  adjacent `beta` steps: **1.0 → silent dead zone, 1.25 → 55 c, 1.5 → 471 c,
-  2.0 → 969 c.** Raising it for physical realism (an oboe reed really does sit
+  adjacent `beta` steps, **measured over the cylindrical half of the morph
+  (`alpha <= 0.5`)**: 1.0 → silent dead zone, **1.25 → 55 c**, 1.5 → 471 c,
+  2.0 → 969 c. The qualification matters: at `alpha = 1` every ratio jumps
+  (1.25 gives 866 c there, and 2.0 actually gives 333 c), because that corner
+  is hard for its own reasons. The ratio buys smoothness across most of the
+  plane, not all of it. Raising it for physical realism (an oboe reed really does sit
   an order of magnitude above its notes) costs the instrument its playability,
   and the striking sign — the actual difference between the valves — is
   preserved at any ratio.
@@ -215,14 +219,21 @@ If you revisit any of these, re-measure before re-reasoning.
 
 ## Interpolation rule
 
-Anything that **selects a regime is discrete and must not be interpolated**.
-`ReedCompensation.multiplier_at` uses nearest-neighbour for exactly this
-reason: blending two grid points that chose different regimes lands on a third
-and misses by an octave. A table whose every grid point was within 26 cents
-produced 1200-cent errors between them until the lookup stopped blending.
+Anything that **selects a regime is discrete and must not be blended across a
+boundary**. Blending two grid points that chose different regimes lands on a
+third and misses by an octave: a table whose every grid point was within 26
+cents produced 1200-cent errors between them until the lookup stopped doing it.
 
 Anything that **tunes within a regime is continuous and should be
 interpolated** — `slide_at`, the vent schedule, the pitch compensation curve.
+
+`ReedCompensation.multiplier_at` does **both**, because it has to:
+**interpolate within a plateau, snap across a cliff**, decided by inspecting
+the four bracketing entries against `PLATEAU_TOLERANCE` (1.12 — a plateau
+varies a few percent, the smallest regime step here is ~30%). Snapping
+everywhere was the first rule and is too blunt now that the table is mostly
+smooth; it steps the pitch audibly under a sweep. Interpolating everywhere
+lands between regimes. Neither alone is right.
 
 Related: when searching for something with multiple valid answers (vent nodes,
 embouchure multipliers), **tie-break toward continuity with the neighbours you

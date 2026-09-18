@@ -403,12 +403,18 @@ Both parts are tabulated over `alpha` as well as `beta`. That is not caution: a
 correction calibrated at one bore shape and applied at another misses by over
 an octave. The two morphs are not separable.
 
-The embouchure entry is looked up by **nearest neighbour, never interpolated**.
-It picks a regime, and a regime is discrete — between two grid points that
-chose different ones there is no meaningful value in between. Measured, a table
-whose every grid point was within 26 cents produced 1200-cent errors at the
-points between them until the lookup stopped blending. The length trim *is*
-interpolated, because once the regime is fixed pitch goes smoothly with length.
+The embouchure entry was first looked up by **nearest neighbour, never
+interpolated**. It picks a regime, and a regime is discrete — between two grid
+points that chose different ones there is no meaningful value in between.
+Measured, a table whose every grid point was within 26 cents produced
+1200-cent errors at the points between them until the lookup stopped blending.
+The length trim *is* interpolated, because once the regime is fixed pitch goes
+smoothly with length.
+
+That rule was later refined to **interpolate within a plateau, snap across a
+cliff** — see below. Snapping everywhere proved too blunt once the table was
+mostly smooth: stepping through a continuous correction is audible under a
+sweep.
 
 ### Closing the off-grid gap
 
@@ -437,7 +443,12 @@ note jumps an octave partway through the morph. Worst jump between adjacent
 
 | ratio | 1.0 | 1.25 | 1.5 | 2.0 |
 |---|---|---|---|---|
-| worst adjacent jump | silent dead zone | **55 cents** | 471 cents | 969 cents |
+| worst adjacent jump, `alpha <= 0.5` | silent dead zone | **55 cents** | 471 cents | 969 cents |
+
+The qualification is not decoration. At `alpha = 1` every ratio jumps — 1.25
+gives 866 cents there and 2.0 gives 333 — because that corner is hard for
+reasons of its own. What the ratio buys is smoothness across most of the
+control plane, not all of it.
 
 At 1.25 the correction becomes a smooth monotone plateau instead of two
 plateaus with a cliff between them, and interpolating it is safe. An oboe reed
