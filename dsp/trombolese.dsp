@@ -3,21 +3,34 @@ declare description "Trombone-oboe hybrid with a continuously morphable bore";
 declare version "0.1.0";
 
 // ===========================================================================
-// STATUS: TRANSLITERATED, NOT YET COMPILED.
+// STATUS: PARTLY VERIFIED.
 //
-// This is a port of the validated Python reference in src/trombolese/, which
-// is the authority: reed.py, waveguide.py and synth.py are covered by tests
-// that check the resonator against the stage-1 transfer-matrix model and the
-// excitation against its own closed-form flow solution. Nothing in this file
-// has been through the Faust compiler, because no Faust toolchain was
-// available where it was written. Treat every line as a proposal until
-// `faust2jaqt trombolese.dsp` has run and the output has been compared with
-// scripts/render_audio.py.
+// A port of the Python reference in src/trombolese/, which remains the
+// authority. What has been checked, with faust 2.70.3:
 //
-// Verify in this order:
-//   1. reed alone, driven by a constant load          -> self-oscillates
-//   2. ladder alone, impulse in, spectrum out         -> peaks match stage 1
-//   3. both together                                  -> matches the WAVs
+//   * every definition type-checks
+//   * `valve` reproduces reed.py's _Valve to nine significant figures,
+//     compared sample by sample against the Python
+//
+// What has not:
+//
+//   * the ladder assembly, which is not written yet (see below)
+//   * `flow`, `junction`, `termination` -- these compile, but compiling is
+//     not evidence. `valve` compiled too, and was wrong.
+//
+// That last point is worth the space. The first version of `valve` compiled
+// cleanly, ran, and produced plausible output that was 2.3% off after ten
+// milliseconds and completely wrong at the attack, because Faust initialises
+// feedback state to zero: a state holding the valve's *opening* starts the
+// instrument with the valve shut instead of at rest. Carrying the deviation
+// from rest instead fixes it, since that really is zero at rest. Nothing but
+// a numerical comparison against the reference would have caught it.
+//
+// So verify in this order, and verify numerically:
+//   1. valve alone, constant dp            -> DONE, matches to 9 figures
+//   2. flow alone, against test_reed.py's closed-form check
+//   3. ladder alone, impulse in            -> peaks match stage 1
+//   4. all together                        -> matches scripts/render_audio.py
 // ===========================================================================
 
 import("stdfaust.lib");
@@ -85,11 +98,24 @@ with {
     root = 0.5 * (0.0 - k * zc + sqrt(max(disc, 0.0)));
 };
 
-// Valve displacement, integrated at audio rate, hard-limited at shut and at
-// three times the rest opening.
-valve(dp) = (+ : clip) ~ (_ * 1.0)
+// Valve displacement: y'' + (w/Q) y' + w^2 (y - y0) = sigma dp / mu, by
+// explicit Euler, hard-limited at shut and at three times the rest opening.
+// The `~` supplies the unit delay that puts the previous sample on the
+// right-hand side, matching reed.py's _Valve.advance.
+//
+// The state is the valve's DEVIATION from its rest opening, not the opening
+// itself, because Faust initialises feedback to zero: a state holding the
+// opening would start the instrument with the valve shut rather than at rest.
+// Verified against the Python to nine significant figures.
+valve(dp) = ((equation ~ si.bus(2)) : !, _) : +(restOpen)
 with {
-    clip = min(3.0 * restOpen) : max(0.0);
+    dt = 1.0 / ma.SR;
+    equation(v, d) = vNew, dNew
+    with {
+        accel = striking * dp * invMass - (omega / valveQ) * v - omega * omega * d;
+        vNew = v + accel * dt;
+        dNew = max(0.0 - restOpen, min(2.0 * restOpen, d + vNew * dt));
+    };
 };
 
 // ---------------------------------------------------------------------------
