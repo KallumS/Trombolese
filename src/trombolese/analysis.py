@@ -235,20 +235,21 @@ def scan_morph(
     return MorphScan(alphas=alphas, fundamentals=fundamentals, ratios=ratios)
 
 
-def _fundamental(
+def _regime_frequency(
     instrument: Trombolese,
     alpha: float,
     slide: float,
     freqs: np.ndarray,
+    regime: int = 1,
 ) -> float:
-    """Frequency of the lowest resonance, or NaN if none lies in the band."""
+    """Frequency of the ``regime``-th resonance, or NaN if it is not in band."""
     found = find_resonances(
         instrument.response(freqs, alpha=alpha, slide=slide),
         fmin=float(freqs[0]),
         fmax=float(freqs[-1]),
-        max_count=1,
+        max_count=regime,
     )
-    return float(found.freqs[0]) if len(found) else float("nan")
+    return float(found.freqs[regime - 1]) if len(found) >= regime else float("nan")
 
 
 def compensate_pitch(
@@ -256,15 +257,29 @@ def compensate_pitch(
     target_f1: float | None = None,
     n_alpha: int = 21,
     slide: float = 0.0,
-    search_band: tuple[float, float] = (8.0, 300.0),
+    regime: int = 1,
+    search_band: tuple[float, float] = (8.0, 600.0),
     length_bracket: tuple[float, float] = (0.4, 4.0),
 ) -> PitchCompensation:
-    """Solve for the bore length that holds the fundamental across the morph.
+    """Solve for the bore length that holds one regime steady across the morph.
 
     At each of ``n_alpha`` morph positions this finds, by bisection, the bore
-    length whose first impedance peak lands on ``target_f1``. The result is a
-    lookup that :class:`~trombolese.bore.Trombolese` consults instead of its
-    fixed ``bore_length``.
+    length whose ``regime``-th impedance peak lands on ``target_f1``. The result
+    is a lookup that :class:`~trombolese.bore.Trombolese` consults instead of
+    its fixed ``bore_length``.
+
+    Which regime to target
+    ----------------------
+    This choice is not a detail, and only one regime can be held at a time.
+    The morph's entire purpose is to change the *ratios* between regimes -- from
+    1, 3, 5, 7 to 1, 2, 3, 4 -- so holding all of them still is a contradiction.
+    Compensating for the fundamental leaves the second regime sliding from
+    3.04 to 2.05 times it, a drop of well over an octave; a player sustaining a
+    note on that regime hears it lurch, or jump to a neighbouring one.
+
+    So compensate for the regime that will actually be played. ``regime=1``
+    holds the pedal note; ``regime=2`` or ``3`` holds a normal playing register
+    and lets the pedal move instead.
 
     Compensation cannot disturb the instrument's harmonicity, because the
     cone's truncation ratio depends only on its end radii and not on its length
@@ -289,9 +304,11 @@ def compensate_pitch(
     freqs = np.linspace(search_band[0], search_band[1], 4000)
 
     if target_f1 is None:
-        target_f1 = _fundamental(base, 0.0, slide, freqs)
+        target_f1 = _regime_frequency(base, 0.0, slide, freqs, regime)
         if not np.isfinite(target_f1):
-            raise ValueError("no fundamental found for the cylindrical limit")
+            raise ValueError(
+                f"regime {regime} not found for the cylindrical limit"
+            )
 
     low = base.bore_length * length_bracket[0]
     high = base.bore_length * length_bracket[1]
@@ -302,11 +319,11 @@ def compensate_pitch(
     for i, alpha in enumerate(alphas):
         def error(length: float, alpha: float = float(alpha)) -> float:
             candidate = replace(base, bore_length=length)
-            f1 = _fundamental(candidate, alpha, slide, freqs)
+            f1 = _regime_frequency(candidate, alpha, slide, freqs, regime)
             if not np.isfinite(f1):
                 raise ValueError(
-                    f"no fundamental in {search_band} Hz at alpha={alpha:.3f}, "
-                    f"bore length {length:.3f} m"
+                    f"regime {regime} not in {search_band} Hz at "
+                    f"alpha={alpha:.3f}, bore length {length:.3f} m"
                 )
             # Compare in cents: the solve is then equally tight at every pitch.
             return 1200.0 * np.log2(f1 / target_f1)
