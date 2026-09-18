@@ -17,12 +17,12 @@ of the impedance peaks:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 from scipy.signal import find_peaks
 
-from .bore import BoreResponse, Trombolese
+from .bore import BoreResponse, PitchCompensation, Trombolese
 
 __all__ = [
     "Resonances",
@@ -31,6 +31,8 @@ __all__ = [
     "harmonic_fit",
     "MorphScan",
     "scan_morph",
+    "compensate_pitch",
+    "pitch_neutral",
 ]
 
 
@@ -231,3 +233,98 @@ def scan_morph(
         ratios[i, : len(found)] = found.ratios
 
     return MorphScan(alphas=alphas, fundamentals=fundamentals, ratios=ratios)
+
+
+def _fundamental(
+    instrument: Trombolese,
+    alpha: float,
+    slide: float,
+    freqs: np.ndarray,
+) -> float:
+    """Frequency of the lowest resonance, or NaN if none lies in the band."""
+    found = find_resonances(
+        instrument.response(freqs, alpha=alpha, slide=slide),
+        fmin=float(freqs[0]),
+        fmax=float(freqs[-1]),
+        max_count=1,
+    )
+    return float(found.freqs[0]) if len(found) else float("nan")
+
+
+def compensate_pitch(
+    instrument: Trombolese,
+    target_f1: float | None = None,
+    n_alpha: int = 21,
+    slide: float = 0.0,
+    search_band: tuple[float, float] = (8.0, 300.0),
+    length_bracket: tuple[float, float] = (0.4, 4.0),
+) -> PitchCompensation:
+    """Solve for the bore length that holds the fundamental across the morph.
+
+    At each of ``n_alpha`` morph positions this finds, by bisection, the bore
+    length whose first impedance peak lands on ``target_f1``. The result is a
+    lookup that :class:`~trombolese.bore.Trombolese` consults instead of its
+    fixed ``bore_length``.
+
+    Compensation cannot disturb the instrument's harmonicity, because the
+    cone's truncation ratio depends only on its end radii and not on its length
+    (see :meth:`~trombolese.bore.Trombolese.truncation_ratio`). Lengthening
+    therefore moves every resonance together without rearranging them.
+
+    Parameters
+    ----------
+    target_f1:
+        Fundamental to hold, in Hz. Defaults to whatever the uncompensated
+        instrument sounds at ``alpha = 0``, so the cylindrical limit keeps the
+        pitch it already had and the rest of the morph is brought to meet it.
+    length_bracket:
+        Multiples of the instrument's nominal ``bore_length`` to search
+        between.
+    """
+    from scipy.optimize import brentq
+
+    # Search against an uncompensated copy, or the solve would consult the
+    # very table it is building.
+    base = replace(instrument, pitch_compensation=None)
+    freqs = np.linspace(search_band[0], search_band[1], 4000)
+
+    if target_f1 is None:
+        target_f1 = _fundamental(base, 0.0, slide, freqs)
+        if not np.isfinite(target_f1):
+            raise ValueError("no fundamental found for the cylindrical limit")
+
+    low = base.bore_length * length_bracket[0]
+    high = base.bore_length * length_bracket[1]
+
+    alphas = np.linspace(0.0, 1.0, n_alpha)
+    lengths = np.empty(n_alpha)
+
+    for i, alpha in enumerate(alphas):
+        def error(length: float, alpha: float = float(alpha)) -> float:
+            candidate = replace(base, bore_length=length)
+            f1 = _fundamental(candidate, alpha, slide, freqs)
+            if not np.isfinite(f1):
+                raise ValueError(
+                    f"no fundamental in {search_band} Hz at alpha={alpha:.3f}, "
+                    f"bore length {length:.3f} m"
+                )
+            # Compare in cents: the solve is then equally tight at every pitch.
+            return 1200.0 * np.log2(f1 / target_f1)
+
+        lengths[i] = brentq(error, low, high, xtol=1e-6)
+
+    return PitchCompensation(alphas=alphas, lengths=lengths, target_f1=target_f1)
+
+
+def pitch_neutral(instrument: Trombolese, **kwargs) -> Trombolese:
+    """A copy of ``instrument`` whose morph does not change the pitch.
+
+    Convenience wrapper over :func:`compensate_pitch`. Keyword arguments are
+    passed straight through.
+
+    >>> from trombolese import Trombolese, pitch_neutral
+    >>> instrument = pitch_neutral(Trombolese())
+    """
+    return replace(
+        instrument, pitch_compensation=compensate_pitch(instrument, **kwargs)
+    )

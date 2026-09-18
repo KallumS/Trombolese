@@ -30,7 +30,7 @@ from .bore import Trombolese
 
 __all__ = ["Theme", "LIGHT", "DARK", "THEMES", "SWEEP_ALPHAS",
            "plot_bore_profiles", "plot_impedance", "plot_overblow",
-           "plot_resonance_ratios"]
+           "plot_resonance_ratios", "plot_compensation"]
 
 
 @dataclass(frozen=True)
@@ -151,7 +151,9 @@ def plot_bore_profiles(
     for ax in (silhouette, taper):
         theme.apply(fig, ax)
 
-    bore_end = instrument.bore_length + slide
+    # Under pitch compensation the bore is a different length at every morph
+    # position, so the enlarged panel has to span the longest of them.
+    bore_end = max(instrument.bore_length_at(a) for a in alphas) + slide
     if instrument.include_mouthpiece:
         bore_end += instrument.cup_length + instrument.cup_throat_length
 
@@ -274,5 +276,34 @@ def plot_resonance_ratios(scan: MorphScan, theme: Theme = LIGHT) -> Figure:
                   color=theme.text_primary)
     ax.set_xlim(0.0, 1.04)
     _legend(ax, theme, None)
+    fig.tight_layout()
+    return fig
+
+
+def plot_compensation(compensation, theme: Theme = LIGHT) -> Figure:
+    """Bore length required to hold the fundamental, against morph position.
+
+    One series, so no legend. The instrument has to grow by most of a factor of
+    two to keep its pitch as the bore turns conical, because a cone sounds
+    ``c / 2L`` where a cylinder of the same length sounds ``c / 4L``.
+    """
+    fig, ax = _new_axes(theme, (7.0, 4.2))
+
+    ax.plot(compensation.alphas, compensation.lengths, color=theme.ramp[-2],
+            linewidth=2.2)
+    ax.annotate(
+        f"x{compensation.length_ratio:.2f} longer at the conical end",
+        xy=(0.985, compensation.lengths[-1]), xytext=(0, -16),
+        textcoords="offset points", color=theme.text_secondary,
+        fontsize=9, ha="right",
+    )
+
+    ax.set_xlabel("morph  $\\alpha$      (0 = cylindrical,  1 = conical)")
+    ax.set_ylabel("bore length (m)")
+    ax.set_title(
+        f"Bore length holding the fundamental at {compensation.target_f1:.1f} Hz",
+        fontsize=11, loc="left", pad=12, color=theme.text_primary,
+    )
+    ax.set_xlim(0.0, 1.0)
     fig.tight_layout()
     return fig

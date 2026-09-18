@@ -29,11 +29,13 @@ from .analysis import (
     HarmonicFit,
     MorphScan,
     Resonances,
+    compensate_pitch,
     find_resonances,
     harmonic_fit,
+    pitch_neutral,
     scan_morph,
 )
-from .bore import BoreResponse, Segment, Trombolese
+from .bore import BoreResponse, PitchCompensation, Segment, Trombolese
 from .constants import AIR_20C, Air
 
 __all__ = [
@@ -48,6 +50,9 @@ __all__ = [
     "harmonic_fit",
     "MorphScan",
     "scan_morph",
+    "PitchCompensation",
+    "compensate_pitch",
+    "pitch_neutral",
     "wavenumber",
     "radiation_impedance",
     "cylinder_matrix",

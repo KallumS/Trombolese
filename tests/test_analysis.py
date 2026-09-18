@@ -5,7 +5,14 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from trombolese import Trombolese, find_resonances, harmonic_fit, scan_morph
+from trombolese import (
+    Trombolese,
+    compensate_pitch,
+    find_resonances,
+    harmonic_fit,
+    pitch_neutral,
+    scan_morph,
+)
 from trombolese.bore import BoreResponse
 
 FREQS = np.linspace(20.0, 900.0, 20_000)
@@ -107,3 +114,59 @@ class TestScanMorph:
         """A regime that falls outside the band must leave a hole, not renumber."""
         scan = scan_morph(Trombolese(), FREQS, n_alpha=3, n_partials=3, fmax=120.0)
         assert np.isnan(scan.ratios[:, 2]).all()
+
+
+class TestPitchCompensation:
+    """The morph must be usable as a purely timbral control."""
+
+    def test_holds_the_fundamental_across_the_morph(self) -> None:
+        instrument = pitch_neutral(Trombolese(), n_alpha=5)
+        target = instrument.pitch_compensation.target_f1
+        for alpha in (0.0, 0.25, 0.5, 0.75, 1.0):
+            f1 = find_resonances(
+                instrument.response(FREQS, alpha=alpha), fmax=900.0
+            ).freqs[0]
+            cents = 1200.0 * np.log2(f1 / target)
+            assert abs(cents) < 2.0
+
+    def test_defaults_to_the_cylindrical_pitch(self) -> None:
+        plain = Trombolese()
+        expected = find_resonances(plain.response(FREQS, alpha=0.0), fmax=900.0).freqs[0]
+        compensation = compensate_pitch(plain, n_alpha=3)
+        assert compensation.target_f1 == pytest.approx(expected, rel=2e-3)
+
+    def test_accepts_an_explicit_target(self) -> None:
+        instrument = pitch_neutral(Trombolese(), target_f1=50.0, n_alpha=3)
+        f1 = find_resonances(instrument.response(FREQS, alpha=0.5), fmax=900.0).freqs[0]
+        assert f1 == pytest.approx(50.0, rel=2e-3)
+
+    def test_the_bore_lengthens_monotonically(self) -> None:
+        compensation = compensate_pitch(Trombolese(), n_alpha=5)
+        assert np.all(np.diff(compensation.lengths) > 0.0)
+        # A cone sounds c/2L where a cylinder sounds c/4L, so compensating
+        # costs most of a factor of two in length.
+        assert 1.5 < compensation.length_ratio < 2.0
+
+    def test_compensation_preserves_harmonicity(self) -> None:
+        """Length cancels out of the truncation ratio, so it must not rearrange modes."""
+        plain = Trombolese()
+        tuned = pitch_neutral(plain, n_alpha=5)
+        assert tuned.truncation_ratio(1.0) == pytest.approx(plain.truncation_ratio(1.0))
+        found = find_resonances(tuned.response(FREQS, alpha=1.0), fmax=900.0, max_count=3)
+        assert np.allclose(found.ratios, [1, 2, 3], rtol=0.06)
+
+    def test_still_overblows_from_a_twelfth_to_an_octave(self) -> None:
+        instrument = pitch_neutral(Trombolese(), n_alpha=5)
+        low = find_resonances(instrument.response(FREQS, alpha=0.0), fmax=900.0)
+        high = find_resonances(instrument.response(FREQS, alpha=1.0), fmax=900.0)
+        assert low.overblow_ratio == pytest.approx(3.0, abs=0.1)
+        assert high.overblow_ratio == pytest.approx(2.05, abs=0.1)
+
+    def test_interpolates_between_solved_points(self) -> None:
+        compensation = compensate_pitch(Trombolese(), n_alpha=5)
+        midpoint = compensation.length_at(0.125)
+        assert compensation.lengths[0] < midpoint < compensation.lengths[1]
+
+    def test_uncompensated_instrument_ignores_alpha_for_length(self) -> None:
+        plain = Trombolese()
+        assert plain.bore_length_at(0.0) == plain.bore_length_at(1.0)

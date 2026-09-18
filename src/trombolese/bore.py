@@ -71,7 +71,7 @@ from .acoustics import (
 )
 from .constants import AIR_20C, Air
 
-__all__ = ["Trombolese", "BoreResponse", "Segment"]
+__all__ = ["Trombolese", "BoreResponse", "Segment", "PitchCompensation"]
 
 
 def _lerp(alpha: float, at_zero: float, at_one: float) -> float:
@@ -90,6 +90,42 @@ class Segment:
     @property
     def is_cylindrical(self) -> bool:
         return self.radius_in == self.radius_out
+
+
+@dataclass(frozen=True)
+class PitchCompensation:
+    """Bore length against morph position, holding the fundamental constant.
+
+    The morph is not pitch-neutral on its own: a cone sounds its fundamental
+    near ``c / 2L`` where a cylinder of the same length sounds ``c / 4L``, so
+    turning the bore conical lifts the pitch by most of an octave. Compensating
+    means lengthening the bore as ``alpha`` rises -- by nearly a factor of two
+    at the conical end, which is why the compensated instrument is a good deal
+    longer than the trombone it started from.
+
+    Built by :func:`trombolese.analysis.compensate_pitch`, which solves for the
+    length at each of a handful of morph positions; lengths in between are
+    linearly interpolated, which is ample since the curve is smooth and
+    monotonic.
+
+    Holding pitch makes ``alpha`` a purely timbral control, and that is what
+    makes the instrument's defining gesture possible: sweeping the bore while
+    a note sustains, so the fundamental stays put while every regime above it
+    slides around.
+    """
+
+    alphas: np.ndarray
+    lengths: np.ndarray
+    target_f1: float
+
+    def length_at(self, alpha: float) -> float:
+        """Bore length that holds the fundamental at ``target_f1``."""
+        return float(np.interp(alpha, self.alphas, self.lengths))
+
+    @property
+    def length_ratio(self) -> float:
+        """How much longer the conical limit is than the cylindrical one."""
+        return float(self.lengths[-1] / self.lengths[0])
 
 
 @dataclass
@@ -169,6 +205,10 @@ class Trombolese:
 
     include_mouthpiece: bool = True
 
+    #: When set, the bore lengthens with ``alpha`` so the fundamental does not
+    #: move. Build one with :func:`trombolese.analysis.compensate_pitch`.
+    pitch_compensation: PitchCompensation | None = None
+
     air: Air = field(default_factory=lambda: AIR_20C)
 
     # -- geometry ---------------------------------------------------------
@@ -183,21 +223,26 @@ class Trombolese:
         self._check_alpha(alpha)
         return _lerp(alpha, self.cyl_bell_entry_radius, self.cone_bell_entry_radius)
 
-    def truncation_ratio(self, alpha: float, slide: float = 0.0) -> float:
+    def truncation_ratio(self, alpha: float) -> float:
         """How stubby the cone is: apex distance over total distance to the bell.
 
         0 would be a complete cone (apex at the lips) and gives an exactly
         harmonic series; values above roughly 0.2 are too truncated to produce
         one. Returns NaN at ``alpha = 0``, where the bore is cylindrical and
         has no apex.
+
+        This works out to be simply the ratio of the bore's two end radii. The
+        apex distance is ``r_in L / (r_out - r_in)`` and the distance from apex
+        to bell is ``r_out L / (r_out - r_in)``, so the length cancels: how
+        complete the cone is depends only on how much it opens, never on how
+        long it is. That is what makes pitch compensation safe -- lengthening
+        the bore to hold the pitch cannot disturb its harmonicity.
         """
         throat = self.throat_radius(alpha)
         entry = self.bell_entry_radius(alpha)
         if entry <= throat:
             return float("nan")
-        length = self.bore_length + slide
-        apex = throat * length / (entry - throat)
-        return apex / (apex + length)
+        return throat / entry
 
     def bell_radii(self, alpha: float = 0.0) -> np.ndarray:
         """Radii at the boundaries of the bell's conical slices."""
@@ -205,6 +250,12 @@ class Trombolese:
         s = np.linspace(0.0, 1.0, self.bell_segments + 1)
         ratio = self.bell_radius / entry
         return entry * (1.0 + (ratio ** (1.0 / self.bell_flare) - 1.0) * s) ** self.bell_flare
+
+    def bore_length_at(self, alpha: float) -> float:
+        """Bore length at this morph position, before any slide extension."""
+        if self.pitch_compensation is None:
+            return self.bore_length
+        return self.pitch_compensation.length_at(alpha)
 
     def segments(self, alpha: float = 0.0, slide: float = 0.0) -> list[Segment]:
         """The bore as an ordered list of frusta, mouthpiece end first.
@@ -240,7 +291,7 @@ class Trombolese:
                 "bore",
                 self.throat_radius(alpha),
                 self.bell_entry_radius(alpha),
-                self.bore_length + slide,
+                self.bore_length_at(alpha) + slide,
             )
         )
 

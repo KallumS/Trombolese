@@ -34,20 +34,40 @@ the slide — travels from a twelfth to an octave:
 
 ## Results
 
-At 20 °C, with the slide closed:
+At 20 °C, with the slide closed and pitch compensation on:
 
-| alpha | throat | truncation | f₁ (Hz) | f₂/f₁ | regime ratios |
-|------:|-------:|-----------:|--------:|------:|---------------|
-| 0.00 | 6.95 mm | — | 35.9 | 3.044 | 1, 3.04, 5.08, 7.05 |
-| 0.25 | 5.71 mm | 0.637 | 43.0 | 2.588 | 1, 2.59, 4.24, 5.82 |
-| 0.50 | 4.47 mm | 0.408 | 50.2 | 2.290 | 1, 2.29, 3.66, 4.94 |
-| 0.75 | 3.24 mm | 0.249 | 57.4 | 2.108 | 1, 2.11, 3.26, 4.30 |
-| 1.00 | 2.00 mm | 0.133 | 63.9 | 2.023 | 1, 2.02, 3.03, 3.87 |
+| alpha | throat | truncation | bore length | f₁ (Hz) | f₂/f₁ | regime ratios |
+|------:|-------:|-----------:|------------:|--------:|------:|---------------|
+| 0.00 | 6.95 mm | — | 2.15 m | 35.85 | 3.044 | 1, 3.04, 5.08, 7.05 |
+| 0.25 | 5.71 mm | 0.637 | 2.60 m | 35.85 | 2.599 | 1, 2.60, 4.27, 5.93 |
+| 0.50 | 4.47 mm | 0.408 | 3.05 m | 35.85 | 2.310 | 1, 2.31, 3.72, 5.14 |
+| 0.75 | 3.24 mm | 0.249 | 3.49 m | 35.85 | 2.132 | 1, 2.13, 3.34, 4.57 |
+| 1.00 | 2.00 mm | 0.133 | 3.90 m | 35.85 | 2.045 | 1, 2.05, 3.12, 4.21 |
 
-The fundamental rises by a little over an octave across the sweep, so the morph
-is not pitch-neutral — it is a timbral *and* a registral control. Whether to
-compensate for that in the instrument's tuning is a playability decision for
-stage 2, not an acoustics one.
+## Pitch neutrality, and the gesture it buys
+
+Left alone, the morph is not pitch-neutral: a cone sounds its fundamental near
+`c / 2L` where a cylinder of the same length sounds `c / 4L`, so turning the
+bore conical lifts the pitch by most of an octave. `compensate_pitch` solves,
+at each morph position, for the bore length that puts the fundamental back
+where it started — holding it to **0.00 cents** across the whole sweep.
+
+![Bore length holding the fundamental](out/compensation-light.png)
+
+The instrument has to grow by a factor of 1.81 to manage it, from 2.80 m
+overall at the cylindrical end to 4.55 m at the conical one.
+
+Compensation is safe, and provably so: the cone's truncation ratio works out to
+be just the ratio of its two end radii, with the length cancelling entirely. So
+lengthening the bore moves every resonance together and cannot rearrange them —
+it shifts pitch without touching harmonicity.
+
+What this buys is the instrument's defining gesture. With `alpha` no longer
+moving the pitch, it becomes a purely timbral control, and the bore can be
+swept *while a note sustains*: the fundamental stays exactly put while every
+regime above it slides around it, the odd-harmonic spectrum of a cylinder
+dissolving into the full series of a cone under a held pitch. Nothing made of
+brass can do that.
 
 ## Two things the geometry got wrong on the first pass
 
@@ -82,6 +102,7 @@ bell's entry follows the bore.
 ```bash
 pip install -e ".[dev]"
 python scripts/explore_morph.py          # table + figures into out/
+python scripts/explore_morph.py --uncompensated   # let the morph move the pitch
 python scripts/explore_morph.py --slide 0.3 --no-figures
 pytest
 ```
@@ -90,9 +111,9 @@ As a library:
 
 ```python
 import numpy as np
-from trombolese import Trombolese, find_resonances, scan_morph
+from trombolese import Trombolese, find_resonances, pitch_neutral, scan_morph
 
-instrument = Trombolese()
+instrument = pitch_neutral(Trombolese())   # omit for raw geometry
 freqs = np.linspace(20.0, 900.0, 20_000)
 
 regimes = find_resonances(instrument.response(freqs, alpha=0.5), fmax=900.0)
@@ -162,9 +183,10 @@ a great deal for stage 2.
 
 The planned stack is a Faust DSP core shipped as a **CLAP** plugin.
 
-This model hands stage 2 three things: the bore geometry as a function of
-`alpha`, the resonance structure to validate a waveguide against, and the
-truncation-ratio constraint that fixes how wide the conical limit has to be.
+This model hands stage 2 four things: the bore geometry as a function of
+`alpha`, the resonance structure to validate a waveguide against, the
+truncation-ratio constraint that fixes how wide the conical limit has to be,
+and the compensation curve that keeps the morph pitch-neutral.
 
 The next step is a digital waveguide whose delay-line lengths and scattering
 junctions reproduce these impedance curves, then a morphable excitation —
