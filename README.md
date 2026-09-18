@@ -410,28 +410,58 @@ whose every grid point was within 26 cents produced 1200-cent errors at the
 points between them until the lookup stopped blending. The length trim *is*
 interpolated, because once the regime is fixed pitch goes smoothly with length.
 
-### What it achieves, and where it does not
+### Closing the off-grid gap
+
+The first version of this correction held its own calibration grid to 26 cents
+and then missed by an octave at a quarter of the points *between* grid nodes.
+Four attempts to fix that from the table's side all failed, and one change
+away from the table fixed most of it.
+
+**What failed.** A denser grid (9×9 against 5×9) verified worse. Longer probe
+notes verified worse, then — once the rest was fixed — identically, for 2.6×
+the cost. Preferring the middle of a run of acceptable candidates, on the
+theory that an edge candidate sits against a regime boundary, gave three
+off-grid failures instead of one. Re-solving only the failing entries with a
+long held note repaired one entry to a value its neighbours did not share, and
+the resulting cliff broke two nearby points that had been fine.
+
+The last two failed the same way, which is the lesson: **the table's smoothness
+is worth more than any individual entry's accuracy**, because the entries are
+read between the grid points far more often than at them.
+
+**What worked** was not a better table but a better map for it to describe.
+The valve's resonance sweeps by `reed_frequency_ratio` as `beta` runs 0 to 1,
+so a large ratio walks it straight across the bore's regime boundaries and the
+note jumps an octave partway through the morph. Worst jump between adjacent
+`beta` steps, at a fixed embouchure:
+
+| ratio | 1.0 | 1.25 | 1.5 | 2.0 |
+|---|---|---|---|---|
+| worst adjacent jump | silent dead zone | **55 cents** | 471 cents | 969 cents |
+
+At 1.25 the correction becomes a smooth monotone plateau instead of two
+plateaus with a cliff between them, and interpolating it is safe. An oboe reed
+really does resonate an order of magnitude above the notes it plays, so 1.25
+looks physically timid — but this bore is three metres of cone, its double reed
+would be contrabassoon-sized, and the striking sign that actually distinguishes
+the two valves survives at any ratio.
+
+The lookup was generalised to match: **interpolated within a plateau, snapped
+across a cliff**. Snapping everywhere steps the pitch audibly under a sweep;
+interpolating everywhere lands between regimes. Inspecting the four bracketing
+entries decides which case applies.
 
 | | drift |
 |---|---|
-| uncompensated | 833 cents |
-| compensated, on the calibration grid | **26 cents worst, 12 median, 0 of 24 points over 50** |
-| compensated, between grid points | 15 cents median, but **5 of 19 points jump an octave** |
+| uncompensated | 217 cents (was 833 before the ratio change) |
+| on the calibration grid | 1 of 23 points over 50 cents |
+| between grid points | 1 of 19 |
+| deep between grid points | 1 of 9 |
+| **overall, 51 points across the control plane** | **median 11 cents, 3 over 50** |
 
-The off-grid failures are not a resolution problem. A denser grid was tried —
-9×9 instead of 5×9 — and verified *worse*, not better. They are points where
-the instrument genuinely settles on a neighbouring regime, and no lookup table
-fixes that, because the regime map has boundaries that no grid aligns with.
-Closing it needs something other than a table: pitch tracking in the loop, or a
-regime-locking term in the excitation.
-
-One more measurement worth recording because it contradicts the obvious
-reasoning. Some notes sound one regime for a third of a second and then jump to
-the octave above and stay there, so probe notes were lengthened from 0.3 s to
-0.8 s on the grounds that the shorter probe was measuring a transient. The
-resulting table verified distinctly worse — several grid points fell silent or
-landed an octave out. No mechanism is offered for that, only the measurement,
-and the default stayed at 0.3 s.
+What remains sits at `alpha >= 0.75, beta >= 0.75`, where the valve genuinely
+prefers a neighbouring regime rather than being mis-tabulated. Closing that
+needs pitch tracking inside the loop — not anything table-shaped.
 
 ## The register vent
 

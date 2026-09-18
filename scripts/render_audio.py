@@ -75,7 +75,7 @@ def main() -> None:
     )
     held = instrument.pitch_compensation.target_f1
     print(f"  holding regime {PLAYING_REGIME} at {held:.2f} Hz across the morph")
-    parameters = ReedParameters(reed_frequency_ratio=2.0)
+    parameters = ReedParameters()
     voice = Voice(instrument, sample_rate=float(args.sample_rate),
                   reed_parameters=parameters)
 

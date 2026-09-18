@@ -141,6 +141,15 @@ If that test fails, the loop delay is wrong — it must come to `2 * N` samples.
 - **The embouchure must stay live at both ends.** Pinning the double reed to an
   absolute frequency leaves the player with no register control whatsoever.
   Its frequency is a *multiple* of the embouchure (`reed_frequency_ratio`).
+- **`reed_frequency_ratio` must stay small — 1.25.** It is the single most
+  consequential parameter in the excitation. The valve's resonance sweeps by
+  this factor as `beta` runs 0→1, so a large one walks it across the bore's
+  regime boundaries and the note jumps an octave mid-morph. Worst jump between
+  adjacent `beta` steps: **1.0 → silent dead zone, 1.25 → 55 c, 1.5 → 471 c,
+  2.0 → 969 c.** Raising it for physical realism (an oboe reed really does sit
+  an order of magnitude above its notes) costs the instrument its playability,
+  and the striking sign — the actual difference between the valves — is
+  preserved at any ratio.
 
 ### Faust
 
@@ -175,19 +184,32 @@ Most wrong conclusions in this project came from measurement, not modelling.
 - **`pkill -f <pattern>` will match its own shell** if the pattern appears in
   the command line. It killed the session's own bash once.
 
-### Two measurements that contradict the obvious reasoning
+### Measurements that contradict the obvious reasoning
 
 Recorded because the reasoning is more persuasive than the data, and the data
-won:
+won. All four were attempts to close the reed compensation's off-grid gap.
 
-1. **Longer calibration probes made the reed compensation worse.** Probes were
-   lengthened 0.3 s → 0.8 s precisely because of the settling problem above,
-   and the resulting table verified distinctly worse — grid points fell silent
-   or landed an octave out. No mechanism is known. The default stayed at 0.3 s.
-2. **A denser calibration grid made it worse too.** 9×9 against 5×9, verified
-   worse off-grid. The residual failures are not a resolution problem.
+1. **A denser calibration grid made it worse.** 9×9 against 5×9, verified worse
+   off-grid.
+2. **Longer calibration probes did not help.** 0.8 s against 0.3 s verified
+   *worse* under the old cliff-ridden table and *identically* under the smooth
+   one — the same points failing either way, for 2.6× the cost.
+3. **Preferring the middle of a run of acceptable candidates made it worse.**
+   The theory was that an edge candidate sits against a regime boundary. Three
+   off-grid failures instead of one.
+4. **Re-solving the failing entries with a long held note made it worse.** It
+   repaired one entry to a value its neighbours did not share, and the
+   resulting cliff broke two nearby points that had been fine.
 
-If you revisit either, re-measure before re-reasoning.
+(3) and (4) failed the same way, which is the general lesson: **the table's
+smoothness is worth more than any individual entry's accuracy**, because the
+entries are read between the grid points far more often than at them.
+
+What *did* work was none of these — it was shrinking `reed_frequency_ratio` so
+the valve stops crossing regime boundaries in the first place. Fix the map, not
+the table over it.
+
+If you revisit any of these, re-measure before re-reasoning.
 
 ---
 
@@ -242,9 +264,12 @@ getting that backwards:
 
 ## Known limitations
 
-- **Reed compensation jumps an octave at ~a quarter of off-grid points.** Needs
-  pitch tracking in the loop or a regime-locking term in the excitation — not a
-  bigger table (measured).
+- **Reed compensation still misses at about one point in twenty**, almost all
+  of it at `alpha >= 0.75, beta >= 0.75` where the valve genuinely prefers a
+  neighbouring regime. Down from a quarter of off-grid points. Worst case is
+  now 720 cents at one on-grid point; median error across the control plane is
+  11 cents. Closing the last of it needs pitch tracking in the loop, not
+  anything table-shaped (four table-shaped attempts are recorded above).
 - **The register vent works but has no role yet.** It does what a register key
   does, but the problem it was built for had another cause, and opening it
   while lipping fights the embouchure. It wants a deliberate place in a

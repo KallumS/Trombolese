@@ -455,6 +455,69 @@ with length once the regime is fixed.
 Audio, same reed sweep: untuned rises 835 cents and stays; tuned holds
 198–200 Hz with one brief mid-sweep excursion.
 
+### Closing the off-grid gap
+
+The correction above held its own grid to 26 cents and missed by an octave at a
+quarter of the points between grid nodes. Four attempts from the table's side
+failed; one change away from the table fixed most of it.
+
+**Diagnosis.** The multiplier table was not a smooth surface but two plateaus
+with a cliff between them, the cliff a factor of ~1.94 — an octave in valve
+frequency. Rows for α ≤ 0.5 were *identical*; only the cliff's position moved
+with α. Meanwhile the bore's impedance peak heights reorder across the morph
+(at α=0 the lowest regime is strongest at 153 dB descending; at α=1 regime 3 is
+strongest at 164.7 dB), so which regime wins the loop-gain competition changes.
+
+**Root cause.** The valve's resonance sweeps by `reed_frequency_ratio` as β runs
+0→1, walking it straight across regime boundaries. Worst jump between adjacent
+β steps, fixed embouchure:
+
+| ratio | 1.0 | 1.10 | 1.15 | 1.20 | 1.25 | 1.5 | 2.0 |
+|---|---|---|---|---|---|---|---|
+| worst adjacent jump | dead zone | 1226 c | 1226 c | 1226 c | **55 c** (α≤0.5) | 471 c | 969 c |
+
+Ratio 1.0 opens a silent dead zone through the middle of the morph — both
+valves at the same frequency with opposite striking. 1.25 is the optimum.
+
+**The lookup was generalised** from "always snap" to **interpolate within a
+plateau, snap across a cliff**, deciding from the four bracketing entries
+(`PLATEAU_TOLERANCE = 1.12`; a plateau varies a few percent, the smallest
+regime step on this instrument is ~30%).
+
+**Four things that failed**, each measured:
+
+| attempt | result |
+|---|---|
+| Denser grid, 9×9 vs 5×9 | worse off-grid (6/18 vs 5/19) |
+| Higher valve Q as a regime-locking term (15 → 25 → 40) | worse; Q=40 introduced a jump at α=0 that was not there |
+| Prefer the middle of a run of acceptable candidates | 3 off-grid failures instead of 1 |
+| Re-solve only failing entries with a long held note | repaired one entry to a value its neighbours did not share; the new cliff broke two nearby points |
+| Longer probes, 0.8 s vs 0.3 s | *identical* results under the smooth table, 2.6× the cost (they had been actively worse under the old one) |
+
+The last two failed the same way: **the table's smoothness is worth more than
+any individual entry's accuracy.**
+
+**Result**, 51 points across the (α, β) plane, fresh voice and 1 s settle:
+
+| | before | after |
+|---|---|---|
+| off-grid worst | 1215 c | **100 c** |
+| off-grid over 50 c | 5/19 | **1/19** |
+| on-grid over 50 c | 0/24 | 1/23 (720 c at α=0.75, β=0.75) |
+| deep-interior points | not measured | 1/9, worst 58 c |
+| **overall median** | 15 c | **11 c**, 3/51 over 50 |
+
+Audio: the tuned reed sweep now holds 44 cents with no jumps, against a 695-cent
+mid-sweep excursion before; the untuned sweep fell from 835 cents with an octave
+jump to 161 cents of smooth drift. The bore glissando is unaffected at 35 cents.
+
+**One test failure was informative rather than cosmetic.** The coarse test
+fixture kept missing its bar, and the cause was candidate *resolution*, not the
+method: at 9 candidates the scan steps by ×1.34 between embouchures and walks
+past the right one. Measured on the same grid — 10/15 within 120 cents at 9
+candidates, 12/15 at 15, **15/15 at 19**. Coarsening the grid is cheap;
+coarsening the candidates is not.
+
 ---
 
 ## 8. Faust toolchain
@@ -505,12 +568,15 @@ Kept because each cost time and each looks plausible enough to be re-tried.
 
 | hypothesis | how tested | outcome |
 |---|---|---|
+| A denser reed-compensation grid fixes the octave jumps | 9×9 vs 5×9 | **Disproved.** Worse off-grid. |
+| Higher valve Q locks the reed to the intended regime | Q 15/25/40 | **Disproved.** Worse; Q=40 added a jump at α=0. |
+| Preferring the middle of a candidate run is more robust | rebuilt the table | **Disproved.** 3 off-grid failures instead of 1. |
+| Re-solving failing entries with a long held note repairs them | added a repair pass | **Disproved.** Created a cliff that broke two good neighbours. |
 | Waveguide sharpness is spatial discretisation | fs 48k → 384k | **Disproved.** Error did not shrink. |
 | …is the mouthpiece's undersampled features | removed mouthpiece | **Disproved.** Unchanged. |
 | …is the bell's stepped approximation | removed bell | **Disproved.** Unchanged. |
 | Dispersion can be lumped at the termination | swept reference 60–1000 Hz | **Disproved.** Low regimes insensitive — the bell reflects them first. |
 | A per-section one-pole can match the √f law | analysed group delay | **Disproved.** A one-pole's delay is flat across 30–900 Hz. Exact at one frequency only. |
-| A denser reed-compensation grid fixes the octave jumps | 9×9 vs 5×9 | **Disproved.** Verified *worse* off-grid (6/18 vs 5/19). |
 | Longer calibration probes are more accurate | 0.8 s vs 0.3 s | **Disproved.** Table verified distinctly worse; points fell silent or landed an octave out. No mechanism known. |
 | The register vent fixes conical-end register control | measured with and without | **Disproved.** Vent works, but the cause was the compensation target. Vent makes lipping worse. |
 | Voice state leaks across `reset()` | fresh vs reused voice at a failing point | **Disproved.** Both 199.0 Hz. The apparent contradiction was between two different calibration tables. |
@@ -550,7 +616,7 @@ Kept because each cost time and each looks plausible enough to be re-tried.
 | `lip_q` / `reed_q` | 15 / 12 | below ~7 it does not oscillate |
 | `lip_closing_pressure` | 12000 Pa | must exceed blowing pressure |
 | `reed_closing_pressure` | 7000 Pa | as tuned |
-| `reed_frequency_ratio` | 2.0 (3.5 default) | 2.0 measured better for playability |
+| `reed_frequency_ratio` | **1.25** | decides whether the morph crosses regime boundaries; see §7 |
 | `lip_width` / `reed_width` | 12 / 10 mm | |
 | rest openings | 0.30 mm both | |
 

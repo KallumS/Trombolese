@@ -34,6 +34,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from typing import ClassVar
 
 import numpy as np
 
@@ -97,31 +98,73 @@ class ReedCompensation:
     slide_offsets: np.ndarray
     target_frequency: float
 
+    #: Two entries further apart than this (as a ratio) are taken to have
+    #: chosen different regimes. Within a regime the correction varies by a few
+    #: percent; the smallest step between neighbouring regimes on this
+    #: instrument is about 30%.
+    PLATEAU_TOLERANCE: ClassVar[float] = 1.12
+
     def multiplier_at(self, alpha: float, beta: float) -> float:
         """Embouchure scaling, which keeps the same regime selected.
 
-        Looked up by **nearest neighbour, not interpolated**. This entry's job
-        is to pick a regime, and a regime is a discrete thing: between two grid
-        points that chose different ones there is no meaningful value in
-        between, and blending them lands on a third regime and misses by an
-        octave. Measured, that is exactly what happened -- a table whose every
-        grid point was within 26 cents produced 1200-cent errors at the points
-        between them. Snapping to the nearer grid point keeps the choice a
-        choice.
+        **Interpolated within a plateau, snapped across a cliff.**
+
+        This entry's job is to pick a regime, and a regime is discrete: between
+        two grid points that chose different ones there is no meaningful value
+        in between, and blending them lands on a third and misses by an octave.
+        A table whose every grid point was within 26 cents produced 1200-cent
+        errors at the points between them for exactly this reason.
+
+        But snapping everywhere is not right either. Most of this table is a
+        smooth plateau where the correction really is continuous, and snapping
+        there steps the pitch audibly as a control sweeps. So the four
+        bracketing entries are inspected: if they agree to within
+        ``PLATEAU_TOLERANCE`` they are one regime's worth of correction and get
+        interpolated, and if they do not, the choice is a real one and the
+        nearest is taken.
         """
-        row = int(np.argmin(np.abs(self.alphas - alpha)))
-        column = int(np.argmin(np.abs(self.betas - beta)))
-        return float(self.multipliers[row, column])
+        return self._look_up(self.multipliers, alpha, beta, snap_across_cliffs=True)
+
+    def _bracket(self, grid: np.ndarray, value: float) -> tuple[int, int, float]:
+        """Indices either side of ``value`` in ``grid``, and the fraction between."""
+        if len(grid) == 1:
+            return 0, 0, 0.0
+        upper = int(np.clip(np.searchsorted(grid, value), 1, len(grid) - 1))
+        lower = upper - 1
+        span = grid[upper] - grid[lower]
+        fraction = 0.0 if span == 0 else float((value - grid[lower]) / span)
+        return lower, upper, float(np.clip(fraction, 0.0, 1.0))
+
+    def _look_up(self, table: np.ndarray, alpha: float, beta: float,
+                 snap_across_cliffs: bool = False) -> float:
+        row_lo, row_hi, row_f = self._bracket(self.alphas, alpha)
+        col_lo, col_hi, col_f = self._bracket(self.betas, beta)
+
+        corners = np.array([
+            table[row_lo, col_lo], table[row_lo, col_hi],
+            table[row_hi, col_lo], table[row_hi, col_hi],
+        ])
+
+        if snap_across_cliffs:
+            smallest = float(np.min(np.abs(corners)))
+            largest = float(np.max(np.abs(corners)))
+            if smallest <= 0.0 or largest / smallest > self.PLATEAU_TOLERANCE:
+                row = row_hi if row_f > 0.5 else row_lo
+                column = col_hi if col_f > 0.5 else col_lo
+                return float(table[row, column])
+
+        lower = corners[0] + col_f * (corners[1] - corners[0])
+        upper = corners[2] + col_f * (corners[3] - corners[2])
+        return float(lower + row_f * (upper - lower))
 
     def slide_at(self, alpha: float, beta: float) -> float:
         """Length trim, which absorbs the reed's pull on that regime.
 
-        Bilinear, unlike the multiplier: once the regime is fixed, pitch varies
-        smoothly with length, so interpolating here is not only safe but what
-        keeps the correction from stepping audibly between grid points.
+        Always bilinear: once the regime is fixed, pitch varies smoothly with
+        length, so interpolating here is not only safe but what keeps the
+        correction from stepping audibly between grid points.
         """
-        rows = np.array([np.interp(beta, self.betas, r) for r in self.slide_offsets])
-        return float(np.interp(alpha, self.alphas, rows))
+        return self._look_up(self.slide_offsets, alpha, beta)
 
 
 @dataclass
@@ -315,8 +358,8 @@ def compensate_reed_morph(
             )
             candidates = analytic * np.geomspace(1.0 / span, span, n_candidates)
 
-            scored = []
-            for multiplier in candidates:
+            errors = np.full(len(candidates), np.inf)
+            for index, multiplier in enumerate(candidates):
                 sounded = _sounding_frequency(
                     probe,
                     Controls(pressure=pressure,
@@ -325,26 +368,26 @@ def compensate_reed_morph(
                     seconds=seconds,
                 )
                 if np.isfinite(sounded):
-                    scored.append(
-                        (abs(1200.0 * np.log2(sounded / target)), float(multiplier))
-                    )
+                    errors[index] = abs(1200.0 * np.log2(sounded / target))
 
-            if not scored:
+            if not np.any(np.isfinite(errors)):
                 multipliers[row, column] = analytic
                 continue
 
             # Several embouchures can land equally near the target, on
             # different regimes. Picking the outright winner each time makes
             # the table jump between them, and the damage shows up not at the
-            # grid points -- each of which is individually fine -- but *between*
-            # them, where interpolating across such a jump lands on a third
-            # regime entirely and misses by an octave. So among the entries
-            # doing essentially as well, take the one nearest its already-known
-            # neighbours: the previous beta in this row, and the same beta in
-            # the row below. Smoothness in both directions is what makes the
-            # surface safe to interpolate.
-            best_error = min(error for error, _ in scored)
-            contenders = [m for error, m in scored if error <= best_error + 25.0]
+            # grid points -- each individually fine -- but *between* them,
+            # where interpolating across such a jump lands on a third regime
+            # and misses by an octave. So among those doing essentially as
+            # well, take the one nearest its already-solved neighbours.
+            #
+            # Preferring the middle of a run of acceptable candidates, rather
+            # than the one nearest the neighbours, was tried on the theory that
+            # an edge candidate sits against a regime boundary. It verified
+            # worse (three off-grid failures against one) and was dropped.
+            acceptable = errors <= float(np.min(errors)) + 25.0
+            contenders = candidates[acceptable]
 
             neighbours = []
             if column > 0:
@@ -355,8 +398,8 @@ def compensate_reed_morph(
                 float(np.exp(np.mean(np.log(neighbours)))) if neighbours
                 else analytic
             )
-            multipliers[row, column] = min(
-                contenders, key=lambda m: abs(np.log(m / anchor))
+            multipliers[row, column] = float(
+                min(contenders, key=lambda m: abs(np.log(m / anchor)))
             )
 
             # Whatever the embouchure could not reach is the reed's pull on the

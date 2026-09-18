@@ -81,14 +81,29 @@ class ReedParameters:
         *control*, not a constant -- a brass player chooses which regime speaks
         by setting it -- so it is normally overridden per note.
     reed_frequency_ratio:
-        How far above the embouchure control the double reed sits. A double
-        reed resonates well above the regimes it drives, but it must still
-        answer to the player: biting raises a reed's effective stiffness and
-        favours the upper register, just as tightening the lips does on brass.
-        Keeping the valve frequency proportional to the embouchure at *both*
-        ends is what preserves register control across the whole morph --
-        pinning the reed end to an absolute frequency leaves the player with no
-        pitch control whatsoever, which the model duly demonstrated.
+        How far above the embouchure control the double reed sits. It must stay
+        a *ratio*: pinning the reed end to an absolute frequency leaves the
+        player with no register control whatsoever, which the model duly
+        demonstrated.
+
+        Its size decides whether the instrument is playable across the morph,
+        and 1.25 is not a compromise but a measurement. The valve's frequency
+        sweeps by this factor as ``beta`` runs 0 to 1, so a large ratio walks
+        the valve straight across the bore's regime boundaries and the note
+        jumps an octave partway through the morph. Sounding pitch against
+        ``beta`` at a fixed embouchure, worst jump between adjacent steps:
+
+            ratio 1.0   dead zone -- silent through the middle of the morph
+            ratio 1.25  55 cents
+            ratio 1.5   471 cents
+            ratio 2.0   969 cents
+
+        An oboe reed really does resonate an order of magnitude above the notes
+        it plays, so 1.25 looks physically timid. But this bore is three metres
+        of cone, its "double reed" would be contrabassoon-sized or larger, and
+        what actually distinguishes the two valves -- that one blows open and
+        the other blows closed -- is preserved in full at any ratio. The ratio
+        only decides how far the valve wanders while the morph happens.
     reed_frequency_ratio:
         See :meth:`Reed.set_morph`.
     lip_q, reed_q:
@@ -111,7 +126,7 @@ class ReedParameters:
     """
 
     lip_frequency: float = 60.0
-    reed_frequency_ratio: float = 3.5
+    reed_frequency_ratio: float = 1.25
     lip_q: float = 15.0
     reed_q: float = 12.0
     lip_width: float = 0.012
